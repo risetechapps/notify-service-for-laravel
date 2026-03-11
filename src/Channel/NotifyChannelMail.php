@@ -18,13 +18,13 @@ class NotifyChannelMail extends NotifyChannel
     {
         try {
             if (!$to = $notifiable->routeNotificationFor('mail', $notification)) {
-                return;
+                return null;
             }
 
             $message = $notification->toNotifyMail($notifiable);
 
             if (!$message instanceof NotifyMail) {
-                return;
+                return null;
             }
 
             $message->to($to, config('app.name'));
@@ -56,8 +56,9 @@ class NotifyChannelMail extends NotifyChannel
             logglyError()
                 ->withProperties(['notifiable' => $notifiable, 'notification' => $notification])
                 ->exception($exception)->log("Error by sending notification");
+            report($exception);
 
-            throw $exception;
+            return null;
         }
     }
 }
