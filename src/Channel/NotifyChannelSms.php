@@ -22,13 +22,13 @@ class NotifyChannelSms extends NotifyChannel
 
         try {
             if (!$to = $notifiable->routeNotificationFor('sms', $notification)) {
-                return;
+                return null;
             }
 
             $message = $notification->toNotifySms($notifiable);
 
             if (!$message instanceof NotifySms) {
-                return;
+                return null;
             }
 
             $message->to($to);
@@ -62,7 +62,9 @@ class NotifyChannelSms extends NotifyChannel
                 ->withProperties(['notifiable' => $notifiable, 'notification' => $notification])
                 ->exception($exception)->log("Error by sending notification");
 
-            throw $exception;
+            report($exception);
+
+            return null;
         }
     }
 
