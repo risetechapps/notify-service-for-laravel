@@ -10,15 +10,13 @@ use RiseTechApps\Notify\Events\NotifyFailedEvent;
 use RiseTechApps\Notify\Events\NotifySendingEvent;
 use RiseTechApps\Notify\Events\NotifySentEvent;
 use RiseTechApps\Notify\Message\NotifySms;
+use RiseTechApps\Notify\Models\NotifyLog;
 
 class NotifyChannelSms extends NotifyChannel
 {
-
-    /**
-     * @throws Exception
-     */
     public function send($notifiable, Notification $notification)
     {
+        $log = null;
 
         try {
             if (!$to = $notifiable->routeNotificationFor('sms', $notification)) {
@@ -34,18 +32,23 @@ class NotifyChannelSms extends NotifyChannel
             $message->to($to);
             $message->from(config('app.name'));
 
-
             Event::dispatch(new NotifySendingEvent($notifiable, $notification, 'sms'));
 
             $data = $message->toArray();
 
-            if($data['webhook_url'] === null){
+            if ($data['webhook_url'] === null) {
                 $data['webhook_url'] = config('notify.webhook');
             }
 
-            $response = Http::withHeaders([
-                'X-API-KEY' => $this->apiKey,
-            ])
+            $log = NotifyLog::create([
+                'notifiable_type' => get_class($notifiable),
+                'notifiable_id'   => $notifiable->getKey(),
+                'channel'         => 'sms',
+                'status'          => 'sending',
+                'payload'         => $data,
+            ]);
+
+            $response = Http::withHeaders(['X-API-KEY' => $this->apiKey])
                 ->acceptJson()
                 ->post("{$this->apiUrl}/api/v1/send/sms", $data);
 
@@ -55,13 +58,20 @@ class NotifyChannelSms extends NotifyChannel
 
             $responseJson = $response->json();
 
+            $log->markAsSent($responseJson['notification_id'] ?? '', $responseJson);
+
             Event::dispatch(new NotifySentEvent($notifiable, $notification, $responseJson, 'sms'));
 
             logglyInfo()->performedOn(self::class)
-                ->withProperties(['notifiable' => $notifiable, 'notification' => $notification, 'response' => $responseJson])->log("Notification sent");
+                ->withProperties(['notifiable' => $notifiable, 'notification' => $notification, 'response' => $responseJson])
+                ->log("Notification sent");
 
             return $responseJson;
         } catch (\Exception $exception) {
+            if ($log) {
+                $log->markAsFailed($exception->getMessage());
+            }
+
             Event::dispatch(new NotifyFailedEvent($notifiable, $notification, $exception, 'sms'));
 
             logglyError()
@@ -73,5 +83,4 @@ class NotifyChannelSms extends NotifyChannel
             return null;
         }
     }
-
 }
