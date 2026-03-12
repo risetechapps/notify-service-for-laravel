@@ -4,5 +4,6 @@
  * You can place your custom package configuration in here.
  */
 return [
-    'key' => env('NOTIFY_SERVICE_KEY', "")
+    'key' => env('NOTIFY_SERVICE_KEY', ""),
+    'webhook' => env('NOTIFY_SERVICE_WEBHOOK', ""),
 ];

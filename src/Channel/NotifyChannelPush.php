@@ -31,11 +31,17 @@ class NotifyChannelPush extends NotifyChannel
 
             Event::dispatch(new NotifySendingEvent($notifiable, $notification, 'push'));
 
+            $data = $message->toArray();
+
+            if($data['webhook_url'] === null){
+                $data['webhook_url'] = config('notify.webhook');
+            }
+
             $response = Http::withHeaders([
                 'X-API-KEY' => $this->apiKey,
             ])
                 ->acceptJson()
-                ->post("{$this->apiUrl}/api/v1/send/push", $message->toArray());
+                ->post("{$this->apiUrl}/api/v1/send/push", $data);
 
             if ($response->failed()) {
                 throw new Exception('Error sending notification: ' . $response->body());

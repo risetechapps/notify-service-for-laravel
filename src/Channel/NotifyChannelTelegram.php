@@ -28,11 +28,17 @@ class NotifyChannelTelegram extends NotifyChannel
 
             Event::dispatch(new NotifySendingEvent($notifiable, $notification, 'telegram'));
 
+            $data = $message->toArray();
+
+            if($data['webhook_url'] === null){
+                $data['webhook_url'] = config('notify.webhook');
+            }
+
             $response = Http::withHeaders([
                 'X-API-KEY' => $this->apiKey,
             ])
                 ->acceptJson()
-                ->post("{$this->apiUrl}/api/v1/send/telegram", $message->toArray());
+                ->post("{$this->apiUrl}/api/v1/send/telegram", $data);
 
             if ($response->failed()) {
                 throw new Exception('Error sending notification: ' . $response->body());

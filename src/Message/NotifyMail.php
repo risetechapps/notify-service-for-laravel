@@ -28,6 +28,8 @@ class NotifyMail
     protected array $cc = [];
     protected array $bcc = [];
 
+    protected ?string $webhookUrl = null;
+
     private function getEmail(): void
     {
         if (method_exists($this->notifiable, 'routeNotificationForEmail')) {
@@ -194,6 +196,7 @@ class NotifyMail
         return $this;
     }
 
+
     public function toArray(): array
     {
         return array_filter([
@@ -218,7 +221,14 @@ class NotifyMail
             'tables'          => count($this->tables) > 0 ? array_map(fn($t) => $t->toArray(), $this->tables) : null,
             'lists'           => count($this->lists) > 0 ? $this->lists : null,
             'signature'       => $this->signature,
+            'webhook_url'     => $this->webhookUrl,
         ], fn($value) => !is_null($value));
+    }
+
+    public function webhookUrl(string $webhookUrl): static
+    {
+        $this->webhookUrl = $webhookUrl;
+        return $this;
     }
 
     private function resolveTableFromArray(array $table): EmailTable
