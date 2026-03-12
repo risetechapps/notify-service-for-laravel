@@ -4,7 +4,6 @@ namespace RiseTechApps\Notify;
 
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Notification;
-use RiseTechApps\Notify\Channel;
 
 class NotifyServiceProvider extends ServiceProvider
 {
@@ -62,6 +61,8 @@ class NotifyServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/config.php', 'notify');
+
+        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
 
         // Register the main class to use with the facade
         $this->app->singleton(Notify::class, function () {
