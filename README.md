@@ -1,199 +1,842 @@
 # Notify Service for Laravel
 
-[![Latest Version on Packagist](https://img.shields.io/packagist/v/risetechapps/notify-service-for-laravel.svg?style=flat-square)](https://packagist.org/packages/risetechapps/notify-service-for-laravel)
-[![Total Downloads](https://img.shields.io/packagist/dt/risetechapps/notify-service-for-laravel.svg?style=flat-square)](https://packagist.org/packages/risetechapps/notify-service-for-laravel)
-[![License](https://img.shields.io/packagist/l/risetechapps/notify-service-for-laravel.svg?style=flat-square)](https://github.com/risetechapps/notify-service-for-laravel/blob/main/LICENSE.md)
+[![Laravel](https://img.shields.io/badge/Laravel-12.x-red?logo=laravel)](https://laravel.com)
+[![PHP](https://img.shields.io/badge/PHP-8.3%2B-blue?logo=php)](https://php.net)
+[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE.md)
 
-## Visão Geral
+Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **10 canais de notificação**, **campanhas em massa**, **rastreamento automático** por banco de dados e **consultas de status** tanto locais quanto via API do servidor.
 
-O pacote **Notify Service for Laravel** (`risetechapps/notify-service-for-laravel`) estende o sistema de Notificações do Laravel, fornecendo canais de comunicação robustos para envio de **E-mail** e **SMS** através da plataforma **NotifyKit** [^1].
+---
 
-Este pacote simplifica o processo de envio de notificações transacionais e de marketing, permitindo a construção de mensagens ricas em conteúdo (como tabelas, listas e ações) para e-mail e mensagens de texto concisas para SMS, tudo isso utilizando a sintaxe familiar do Laravel.
+## Índice
 
-## Requisitos
+- [Instalação](#instalação)
+- [Configuração](#configuração)
+- [Canais disponíveis](#canais-disponíveis)
+- [Notificações individuais](#notificações-individuais)
+    - [SMS](#sms)
+    - [Email](#email)
+    - [Push FCM](#push-fcm)
+    - [APNS Apple Push](#apns-apple-push)
+    - [Telegram](#telegram)
+    - [Slack](#slack)
+    - [Discord](#discord)
+    - [Teams](#teams)
+    - [WebSocket](#websocket)
+    - [Webhook](#webhook)
+- [Campanhas em massa](#campanhas-em-massa)
+    - [Campanha SMS](#campanha-sms)
+    - [Campanha Email](#campanha-email)
+    - [Fontes de contatos](#fontes-de-contatos)
+- [Rastreamento automático](#rastreamento-automático)
+- [Webhook receiver](#webhook-receiver)
+- [Consultas de status](#consultas-de-status)
+    - [Consultas locais](#consultas-locais)
+    - [Consultas no servidor](#consultas-no-servidor)
+- [Modelos](#modelos)
+- [Eventos Laravel](#eventos-laravel)
 
-Para utilizar este pacote, você deve atender aos seguintes requisitos:
-
-| Requisito | Versão Mínima |
-| :--- | :--- |
-| PHP | `^8.3` |
-| Laravel/Illuminate Support | `^12` |
-| Chave de API | Uma chave de API válida do NotifyKit |
+---
 
 ## Instalação
-
-Você pode instalar o pacote via Composer:
 
 ```bash
 composer require risetechapps/notify-service-for-laravel
 ```
 
-### Publicação do Arquivo de Configuração
-
-Após a instalação, você deve publicar o arquivo de configuração do pacote. Isso criará o arquivo `config/notify.php` em sua aplicação:
+Publique a config e rode as migrations:
 
 ```bash
-php artisan vendor:publish --tag=config
+php artisan vendor:publish --provider="RiseTechApps\Notify\NotifyServiceProvider" --tag="config"
+php artisan migrate
 ```
+
+---
 
 ## Configuração
 
-O pacote requer que você defina sua chave de API do NotifyKit. Adicione a seguinte variável ao seu arquivo `.env`:
+Adicione as variáveis ao seu `.env`:
 
-```dotenv
-NOTIFY_SERVICE_KEY="SUA_CHAVE_DE_API_DO_NOTIFYKIT"
+```env
+NOTIFY_SERVICE_KEY=sua-api-key
+NOTIFY_SERVICE_WEBHOOK=https://sua-app.com/notify/webhook
+
+# Rotas automáticas de webhook (opcional)
+NOTIFY_SERVICE_ROUTES=true
+NOTIFY_SERVICE_ROUTES_PREFIX=notify
 ```
 
-O arquivo de configuração publicado (`config/notify.php`) é o seguinte:
+Arquivo `config/notify.php`:
 
 ```php
-<?php
-
 return [
-    'key' => env('NOTIFY_SERVICE_KEY', "")
+    'key'     => env('NOTIFY_SERVICE_KEY', ''),
+    'webhook' => env('NOTIFY_SERVICE_WEBHOOK', ''),
+
+    // Registra automaticamente as rotas de webhook do package
+    'routes'            => env('NOTIFY_SERVICE_ROUTES', true),
+    'routes_prefix'     => env('NOTIFY_SERVICE_ROUTES_PREFIX', 'notify'),
+    'routes_middleware' => ['api'],
 ];
 ```
 
-## Uso
+Quando `routes = true`, o package registra automaticamente:
 
-O pacote se integra perfeitamente ao sistema de Notificações do Laravel. Ele registra dois novos canais de notificação: `notify.mail` e `notify.sms`.
+```
+POST /notify/webhook           → recebe status de notificações individuais
+POST /notify/webhook/campaign  → recebe status de campanhas
+```
 
-### Canais de Notificação
-
-Para usar os canais, você deve incluí-los no método `via()` de sua classe de notificação:
-
-| Canal | Descrição |
-| :--- | :--- |
-| `notify.mail` | Envia a notificação como E-mail através do NotifyKit. |
-| `notify.sms` | Envia a notificação como SMS através do NotifyKit. |
-
-### Exemplo de Notificação
-
-Crie uma nova notificação, por exemplo, `OrderShippedNotification`:
+Para registrar manualmente (defina `routes = false`):
 
 ```php
-namespace App\Notifications;
+// routes/api.php
+use RiseTechApps\Notify\Http\Controllers\NotifyWebhookController;
 
-use Illuminate\Bus\Queueable;
-use Illuminate\Notifications\Notification;
-use RiseTechApps\Notify\Message\NotifyMail;
+Route::post('/notify/webhook',          [NotifyWebhookController::class, 'notification']);
+Route::post('/notify/webhook/campaign', [NotifyWebhookController::class, 'campaign']);
+```
+
+---
+
+## Canais disponíveis
+
+| Canal | Drivers suportados | Método `via()` |
+|---|---|---|
+| SMS | Twilio, Zenvia, Mobizon | `notify.sms` |
+| Email | SMTP, Mailgun, Resend, SendGrid, SES, Postmark | `notify.mail` |
+| Push Android | FCM | `notify.push` |
+| Push iOS | APNS | `notify.apns` |
+| Telegram | Telegram Bot API | `notify.telegram` |
+| Slack | Slack Webhooks | `notify.slack` |
+| Discord | Discord Webhooks | `notify.discord` |
+| Teams | Microsoft Teams Webhooks | `notify.teams` |
+| WebSocket | Pusher | `notify.websocket` |
+| Webhook | HTTP genérico | `notify.webhook` |
+
+---
+
+## Notificações individuais
+
+Todas as notificações usam o sistema de notificações nativo do Laravel. Crie uma classe de notificação, declare o canal em `via()` e implemente o método correspondente.
+
+O rastreamento é **automático** — um `NotifyLog` é criado no banco para cada envio sem nenhuma configuração adicional.
+
+---
+
+### SMS
+
+```php
 use RiseTechApps\Notify\Message\NotifySms;
 
-class OrderShippedNotification extends Notification
+class PedidoConfirmado extends Notification
 {
-    use Queueable;
-
-    public function via(object $notifiable): array
+    public function via($notifiable): array
     {
-        return ['notify.mail', 'notify.sms'];
+        return ['notify.sms'];
     }
 
-    /**
-     * Converte a notificação para uma mensagem de E-mail do NotifyKit.
-     */
-    public function toNotifyMail(object $notifiable): NotifyMail
+    public function toNotifySms($notifiable): NotifySms
     {
-        return (new NotifyMail())
-            ->subject('Seu pedido foi enviado!')
-            ->lineHeader('Olá, ' . $notifiable->name . '!')
-            ->line('Seu pedido #12345 foi enviado e está a caminho.')
-            ->action('Rastrear Pedido', 'https://rastreio.com/12345')
-            ->lineFooter('Obrigado por comprar conosco!');
-    }
-
-    /**
-     * Converte a notificação para uma mensagem de SMS do NotifyKit.
-     */
-    public function toNotifySms(object $notifiable): NotifySms
-    {
-        return (new NotifySms())
-            ->content('Seu pedido #12345 foi enviado. Rastreie em: https://rastreio.com/12345');
+        return (new NotifySms)
+            ->to($notifiable->phone)
+            ->content('Seu pedido #1234 foi confirmado!')
+            ->webhookUrl('https://sua-app.com/notify/webhook'); // opcional
     }
 }
 ```
 
-### Roteamento de Notificações
+| Método | Descrição |
+|---|---|
+| `->to(string)` | Número destino no formato E.164 sem `+`, ex: `5521981425950` |
+| `->content(string)` | Texto do SMS. Máx: 160 chars |
+| `->from(string)` | Remetente / sender ID |
+| `->webhookUrl(string)` | URL de callback de status (sobrescreve o global do config) |
 
-Seu modelo `Notifiable` (geralmente o `User`) deve implementar os métodos de roteamento para que o pacote saiba para onde enviar as mensagens:
+---
+
+### Email
 
 ```php
-// No seu modelo User.php
+use RiseTechApps\Notify\Message\NotifyMail;
 
-use Illuminate\Notifications\Notifiable;
-
-class User extends Authenticatable
+class BemVindo extends Notification
 {
-    use Notifiable;
-
-    /**
-     * Rota para o canal de E-mail.
-     */
-    public function routeNotificationForMail(Notification $notification): string|array
+    public function via($notifiable): array
     {
-        return $this->email; // Ou um array de e-mails
+        return ['notify.mail'];
     }
 
-    /**
-     * Rota para o canal de SMS.
-     */
-    public function routeNotificationForSms(Notification $notification): string
+    public function toNotifyMail($notifiable): NotifyMail
     {
-        return $this->phone_number; // Deve ser o número de telefone
+        return (new NotifyMail)
+            ->to($notifiable->email, $notifiable->name)
+            ->from('noreply@app.com', 'Minha App')
+            ->subject('Bem-vindo!')
+            ->line('Obrigado por se cadastrar.')
+            ->action('https://app.com/dashboard', 'Acessar painel')
+            ->setSignature('Equipe Minha App');
     }
 }
 ```
 
-### Construindo a Mensagem de Email (`NotifyMail`)
+| Método | Descrição |
+|---|---|
+| `->to(email, name?)` | Destinatário |
+| `->from(email, name?)` | Remetente |
+| `->subject(string)` | Assunto do email |
+| `->subjectMessage(string)` | Subtítulo / preview no cliente de email |
+| `->line(string)` | Linha de texto principal |
+| `->lineHeader(string)` | Linha no cabeçalho (chamadas múltiplas = múltiplas linhas) |
+| `->lineFooter(string)` | Linha no rodapé |
+| `->action(url, text)` | Botão de call-to-action |
+| `->theme(string)` | Tema do template. Default: `default` |
+| `->setSignature(string)` | Assinatura no final |
+| `->attachFromUrl(string\|array)` | Anexar arquivo(s) por URL |
+| `->addTable(EmailTable\|array)` | Tabela: `['headers' => [], 'rows' => [[]]]` |
+| `->addList(type, items)` | Lista: tipo `ordered` ou `unordered` |
+| `->webhookUrl(string)` | URL de callback |
 
-A classe `NotifyMail` oferece métodos fluentes para construir e-mails ricos em conteúdo:
+---
+
+### Push FCM
+
+```php
+use RiseTechApps\Notify\Message\NotifyPush;
+
+public function toNotifyPush($notifiable): NotifyPush
+{
+    return (new NotifyPush)
+        ->token($notifiable->fcm_token)   // string ou array de tokens
+        ->title('Nova mensagem')
+        ->body('Você tem uma nova mensagem de João.')
+        ->imageUrl('https://app.com/image.png')
+        ->data(['order_id' => '1234']);    // valores devem ser strings (regra FCM)
+}
+```
 
 | Método | Descrição |
-| :--- | :--- |
-| `subject(string $subject)` | Define o assunto do e-mail. **Obrigatório.** |
-| `content(array $content)` | Define o conteúdo principal do e-mail (texto livre). |
-| `lineHeader(string $line)` | Adiciona uma linha de texto antes do conteúdo principal. |
-| `lineFooter(string $line)` | Adiciona uma linha de texto após o conteúdo principal. |
-| `line(string $line)` | Define uma linha de texto centralizada. |
-| `action(string $url, string $text)` | Adiciona um botão de ação com URL e texto. |
-| `addTable(EmailTable|array $table)` | Adiciona uma tabela de dados. Use a classe `EmailTable` ou um array. |
-| `addList(string $type, array $items)` | Adiciona uma lista (ordenada ou não). |
-| `attachFromUrl(array|string $attach)` | Anexa arquivos, fornecendo a URL pública do arquivo. |
-| `to(string $email, string $name)` | Define o destinatário (geralmente preenchido pelo roteamento). |
-| `from(string $email, string $name)` | Define o remetente (pode sobrescrever o padrão). |
-| `theme(string $theme)` | Define o tema visual do e-mail (se suportado pelo NotifyKit). |
-| `subjectMessage(string $subjectMessage)` | Define uma mensagem de pré-cabeçalho (pre-header). |
-| `setSignature(string $signature)` | Adiciona uma linha à assinatura do e-mail. |
+|---|---|
+| `->token(string\|array)` | Device token(s) FCM |
+| `->topic(string)` | Tópico FCM (alternativa ao token) |
+| `->title(string)` | Título da notificação |
+| `->body(string)` | Corpo da notificação |
+| `->imageUrl(string)` | URL de imagem |
+| `->data(array)` | Dados extras (todos os valores como string) |
+| `->configId(string)` | UUID da config FCM salva no servidor |
+| `->webhookUrl(string)` | URL de callback |
 
-### Construindo a Mensagem de SMS (`NotifySms`)
+---
 
-A classe `NotifySms` é mais simples, focada na mensagem de texto:
+### APNS Apple Push
+
+```php
+use RiseTechApps\Notify\Message\NotifyApns;
+
+public function toNotifyApns($notifiable): NotifyApns
+{
+    return (new NotifyApns)
+        ->token($notifiable->apns_token)
+        ->title('Novo pedido')
+        ->body('Seu pedido foi enviado.')
+        ->badge(1)
+        ->sound('default')
+        ->data(['order_id' => '1234']);
+}
+```
 
 | Método | Descrição |
-| :--- | :--- |
-| `content(string $content)` | Define o conteúdo da mensagem SMS. **Obrigatório.** |
-| `to(string $to)` | Define o destinatário (geralmente preenchido pelo roteamento). |
-| `from(string $from)` | Define o remetente (pode ser o nome da sua aplicação). |
+|---|---|
+| `->token(string\|array)` | Device token(s) Apple |
+| `->title(string)` | Título |
+| `->body(string)` | Corpo |
+| `->subtitle(string)` | Subtítulo |
+| `->badge(int)` | Número no ícone do app |
+| `->sound(string)` | Nome do arquivo de som |
+| `->data(array)` | Payload customizado |
+| `->category(string)` | Categoria para action buttons iOS |
+| `->threadId(string)` | Agrupa notificações relacionadas |
+| `->configId(string)` | UUID da config APNS |
+| `->webhookUrl(string)` | URL de callback |
 
-## Eventos
+---
 
-O pacote dispara eventos do Laravel durante o ciclo de vida do envio da notificação, permitindo que você monitore e reaja ao status das entregas:
+### Telegram
 
-| Evento | Descrição |
-| :--- | :--- |
-| `RiseTechApps\Notify\Events\NotifySendingEvent` | Disparado antes do envio da notificação para o NotifyKit. |
-| `RiseTechApps\Notify\Events\NotifySentEvent` | Disparado após o envio bem-sucedido, contendo a resposta da API. |
-| `RiseTechApps\Notify\Events\NotifyFailedEvent` | Disparado se ocorrer uma exceção durante o processo de envio. |
+```php
+use RiseTechApps\Notify\Message\NotifyTelegram;
 
-Você pode escutar esses eventos em seu `EventServiceProvider` para implementar lógica de *logging* ou *retry*.
+public function toNotifyTelegram($notifiable): NotifyTelegram
+{
+    return (new NotifyTelegram)
+        ->chatId($notifiable->telegram_chat_id)
+        ->message('🚀 Seu deploy foi concluído com sucesso!')
+        ->parseMode('Markdown')
+        ->button('Ver logs', 'https://app.com/logs');
+}
+```
 
-## Contribuição
+| Método | Descrição |
+|---|---|
+| `->chatId(string)` | ID numérico ou @username |
+| `->message(string)` | Texto da mensagem. Máx: 4096 chars |
+| `->parseMode(string)` | `Markdown` \| `MarkdownV2` \| `HTML` |
+| `->imageUrl(string)` | URL de imagem |
+| `->button(text, url)` | Botão inline |
+| `->buttons(array)` | Múltiplos botões: `[[['text' => '', 'url' => '']]]` |
+| `->configId(string)` | UUID da config Telegram |
+| `->webhookUrl(string)` | URL de callback |
 
-Sinta-se à vontade para contribuir com o desenvolvimento do `Notify Service for Laravel`. Por favor, consulte o arquivo [CONTRIBUTING.md](CONTRIBUTING.md) para detalhes.
+---
+
+### Slack
+
+```php
+use RiseTechApps\Notify\Message\NotifySlack;
+
+public function toNotifySlack($notifiable): NotifySlack
+{
+    return (new NotifySlack)
+        ->channel('#alertas')
+        ->title('Erro crítico')
+        ->message('Ocorreu um erro na integração de pagamento.')
+        ->color('#FF0000')
+        ->field('Ambiente', 'Produção')
+        ->field('Servidor', 'api-01');
+}
+```
+
+| Método | Descrição |
+|---|---|
+| `->message(string)` | Texto principal. Máx: 4000 chars |
+| `->channel(string)` | Canal destino, ex: `#alerts` ou `C01234ABC` |
+| `->title(string)` | Título do bloco |
+| `->color(string)` | Cor hex da barra lateral: `#FF0000` |
+| `->field(label, value)` | Campo chave-valor no bloco |
+| `->fields(array)` | Múltiplos campos de uma vez |
+| `->configId(string)` | UUID da config Slack |
+| `->webhookUrl(string)` | Webhook URL do Slack |
+
+---
+
+### Discord
+
+```php
+use RiseTechApps\Notify\Message\NotifyDiscord;
+
+public function toNotifyDiscord($notifiable): NotifyDiscord
+{
+    return (new NotifyDiscord)
+        ->username('NotifyBot')
+        ->title('Novo usuário cadastrado')
+        ->message('João Silva acabou de se cadastrar.')
+        ->color(3066993) // verde em decimal
+        ->field('Email', 'joao@email.com')
+        ->field('Plano', 'Pro', inline: true);
+}
+```
+
+| Método | Descrição |
+|---|---|
+| `->message(string)` | Texto da mensagem. Máx: 2000 chars |
+| `->username(string)` | Nome exibido do bot. Máx: 80 chars |
+| `->title(string)` | Título do embed |
+| `->color(int)` | Cor em decimal, ex: `16729344` (vermelho) |
+| `->imageUrl(string)` | Imagem grande no embed |
+| `->thumbnail(string)` | Miniatura no embed |
+| `->footer(string)` | Rodapé do embed |
+| `->field(label, value, inline?)` | Campo do embed (máx: 25) |
+| `->fields(array)` | Múltiplos campos de uma vez |
+| `->configId(string)` | UUID da config Discord |
+| `->webhookUrl(string)` | Webhook URL do Discord |
+
+---
+
+### Teams
+
+```php
+use RiseTechApps\Notify\Message\NotifyTeams;
+
+public function toNotifyTeams($notifiable): NotifyTeams
+{
+    return (new NotifyTeams)
+        ->title('Relatório semanal disponível')
+        ->message('O relatório de vendas da semana está pronto.')
+        ->color('0078D4')
+        ->fact('Período', 'Mar/2026')
+        ->fact('Total', 'R$ 48.200,00')
+        ->action('Ver relatório', 'https://app.com/reports');
+}
+```
+
+| Método | Descrição |
+|---|---|
+| `->message(string)` | Corpo da mensagem. Máx: 4000 chars |
+| `->title(string)` | Título do card |
+| `->color(string)` | Cor hex sem `#`, ex: `0078D4` |
+| `->fact(label, value)` | Par chave-valor no card |
+| `->facts(array)` | Múltiplos facts de uma vez |
+| `->action(label, url)` | Botão de ação |
+| `->actions(array)` | Múltiplos botões de uma vez |
+| `->configId(string)` | UUID da config Teams |
+| `->webhookUrl(string)` | Webhook URL do Teams |
+
+---
+
+### WebSocket
+
+```php
+use RiseTechApps\Notify\Message\NotifyWebSocket;
+
+public function toNotifyWebSocket($notifiable): NotifyWebSocket
+{
+    return (new NotifyWebSocket)
+        ->channel("private-user.{$notifiable->id}")
+        ->event('OrderStatusUpdated')
+        ->data(['order_id' => 1234, 'status' => 'shipped'])
+        ->private();
+}
+```
+
+| Método | Descrição |
+|---|---|
+| `->channel(string)` | Canal Pusher, ex: `notifications`, `private-user.123` |
+| `->event(string)` | Nome do evento, ex: `OrderUpdated` |
+| `->data(array)` | Payload do evento |
+| `->private(bool?)` | Canal privado (requer auth Pusher) |
+| `->presence(bool?)` | Canal de presence |
+| `->configId(string)` | UUID da config Pusher |
+| `->webhookUrl(string)` | URL de callback |
+
+---
+
+### Webhook
+
+```php
+use RiseTechApps\Notify\Message\NotifyWebhook;
+
+public function toNotifyWebhook($notifiable): NotifyWebhook
+{
+    return (new NotifyWebhook)
+        ->url('https://erp.empresa.com/api/eventos')
+        ->method('POST')
+        ->payload(['evento' => 'pedido_criado', 'id' => 1234])
+        ->bearerAuth('token-secreto')
+        ->timeout(15);
+}
+```
+
+| Método | Descrição |
+|---|---|
+| `->url(string)` | URL de destino. Máx: 2048 chars |
+| `->method(string)` | `POST` \| `GET` \| `PUT` \| `PATCH`. Default: `POST` |
+| `->payload(array)` | Body da requisição |
+| `->header(key, value)` | Header customizado |
+| `->headers(array)` | Múltiplos headers de uma vez |
+| `->bearerAuth(token)` | Autenticação Bearer |
+| `->basicAuth(user, pass)` | Autenticação Basic |
+| `->apiKeyAuth(token)` | Autenticação por API Key |
+| `->hmacAuth()` | Assinatura HMAC |
+| `->timeout(int)` | Timeout em segundos. Min: 1, Máx: 60 |
+| `->configId(string)` | UUID da config Webhook |
+| `->webhookUrl(string)` | URL de callback de status |
+
+---
+
+## Campanhas em massa
+
+Campanhas não usam o sistema de notificações do Laravel — são disparadas diretamente pela classe `NotifyCampaignBuilder`. Suportam até **10.000 contatos** por disparo com rate limiting configurável.
+
+---
+
+### Campanha SMS
+
+```php
+use RiseTechApps\Notify\NotifyCampaignBuilder;
+
+$campaign = NotifyCampaignBuilder::sms()
+    ->name('Promo Dia das Mães')
+    ->content('Olá {{name}}! 30% OFF hoje. Use: MAES30. Loja.com')
+    ->contacts([
+        ['phone' => '5521981425950', 'name' => 'João'],
+        ['phone' => '5521969014860', 'name' => 'Maria'],
+    ])
+    ->webhookUrl('https://sua-app.com/notify/webhook/campaign')
+    ->ratePerMinute(100)
+    ->send();
+
+// $campaign é um NotifyCampaign com server_campaign_id, status, progress, etc.
+```
+
+| Método | Descrição |
+|---|---|
+| `->name(string)` | Nome da campanha |
+| `->content(string)` | Texto do SMS. Máx: 160 chars. Variáveis: `{{name}}`, `{{phone}}` + chaves de `extra_data` |
+| `->from(string)` | Remetente / sender ID |
+| `->contacts(array)` | Array direto: `[['phone' => '...', 'name' => '...']]` |
+| `->fromQuery(Builder, col, nameCol?)` | Via query Eloquent — processada em chunks de 500 |
+| `->fromCollection(Collection, col, nameCol?)` | Via Collection Laravel |
+| `->configId(string)` | UUID da config SMS |
+| `->webhookUrl(string)` | URL de callback de progresso |
+| `->ratePerMinute(int)` | Envios por minuto. Min: 1, Máx: 600. Default: 60 |
+| `->scheduledAt(string)` | Agendamento: `'2026-06-01 08:00:00'` |
+| `->send()` | Envia e retorna `NotifyCampaign` |
+
+---
+
+### Campanha Email
+
+```php
+use RiseTechApps\Notify\NotifyCampaignBuilder;
+
+$campaign = NotifyCampaignBuilder::email()
+    ->name('Newsletter Março 2026')
+    ->subject('Novidades de Março!')
+    ->line('Confira as novidades deste mês.')
+    ->action('https://app.com/blog', 'Ler mais')
+    ->from('news@app.com', 'Minha App')
+    ->contacts([
+        ['email' => 'joao@email.com', 'name' => 'João'],
+        ['email' => 'maria@email.com', 'name' => 'Maria'],
+    ])
+    ->webhookUrl('https://sua-app.com/notify/webhook/campaign')
+    ->scheduledAt('2026-03-15 09:00:00')
+    ->send();
+```
+
+| Método | Descrição |
+|---|---|
+| `->name(string)` | Nome da campanha |
+| `->subject(string)` | Assunto do email |
+| `->subjectMessage(string)` | Subtítulo / preview |
+| `->line(string)` | Linha de texto principal |
+| `->lineHeader(string)` | Linha no cabeçalho (chamadas múltiplas) |
+| `->lineFooter(string)` | Linha no rodapé |
+| `->action(url, text)` | Botão de call-to-action |
+| `->theme(string)` | Tema do template. Default: `default` |
+| `->signature(string)` | Assinatura |
+| `->from(email, name?)` | Remetente |
+| `->addTable(EmailTable\|array)` | Tabela no corpo: `['headers' => [], 'rows' => [[]]]` |
+| `->addList(type, items)` | Lista `ordered` ou `unordered` |
+| `->contacts(array)` | Array direto: `[['email' => '...', 'name' => '...']]` |
+| `->fromQuery(Builder, col, nameCol?)` | Via query Eloquent |
+| `->fromCollection(Collection, col, nameCol?)` | Via Collection |
+| `->configId(string)` | UUID da config de email |
+| `->webhookUrl(string)` | URL de callback |
+| `->ratePerMinute(int)` | Envios por minuto. Default: 60 |
+| `->scheduledAt(string)` | Agendamento futuro |
+| `->send()` | Envia e retorna `NotifyCampaign` |
+
+---
+
+### Fontes de contatos
+
+**Array direto:**
+```php
+->contacts([
+    ['phone' => '5511999887766', 'name' => 'João'],                          // SMS
+    ['email' => 'joao@email.com', 'name' => 'João', 'extra_data' => [...]], // Email
+])
+```
+
+**Via query Eloquent** — não carrega todos os registros em memória, processa em chunks de 500:
+```php
+->fromQuery(
+    User::where('active', true)->where('accepts_sms', true),
+    contactColumn: 'phone',  // coluna com telefone ou email no banco
+    nameColumn: 'name'       // opcional
+)
+```
+
+**Via Collection:**
+```php
+->fromCollection($users, contactColumn: 'email', nameColumn: 'full_name')
+```
+
+---
+
+## Rastreamento automático
+
+Cada envio — notificação individual ou campanha — é registrado automaticamente no banco. Nenhuma alteração é necessária nas suas classes de notificação.
+
+**Tabelas criadas pelas migrations:**
+
+| Tabela | Descrição |
+|---|---|
+| `notify_logs` | Um registro por envio individual. Armazena canal, status, payload, resposta do servidor |
+| `notify_campaigns` | Uma linha por campanha disparada |
+| `notify_campaign_contacts` | Um registro por contato de campanha |
+
+**Ciclo de status — `notify_logs`:**
+
+| Status | Momento |
+|---|---|
+| `sending` | Antes da chamada HTTP ao servidor |
+| `sent` | Servidor aceitou com HTTP 200 |
+| `delivered` | Webhook do servidor confirmou entrega |
+| `error` | Falha no envio ou rejeição pelo provedor |
+
+**Ciclo de status — `notify_campaigns`:**
+
+| Status | Momento |
+|---|---|
+| `pending` | Campanha criada localmente, aguardando aceite |
+| `processing` | Servidor aceitou e está processando os jobs |
+| `paused` | Pausada no servidor |
+| `completed` | Todos os contatos processados |
+| `failed` | Falha geral |
+| `cancelled` | Cancelada via DELETE no servidor |
+
+---
+
+## Webhook receiver
+
+O package inclui `NotifyWebhookController` que recebe os callbacks do servidor e atualiza o banco local automaticamente.
+
+**Payload esperado — notificação individual:**
+```json
+{
+    "notification_id": "uuid-do-servidor",
+    "status": "delivered",
+    "delivered_at": "2026-03-12 10:30:00"
+}
+```
+
+**Payload esperado — campanha:**
+```json
+{
+    "campaign_id": "uuid-da-campanha-no-servidor",
+    "status": "processing",
+    "total": 1000,
+    "sent": 450,
+    "failed": 12,
+    "started_at": "2026-03-12 09:00:00",
+    "contact_updates": [
+        { "contact": "joao@email.com", "status": "sent", "sent_at": "2026-03-12 09:01:00" },
+        { "contact": "erro@email.com", "status": "failed", "error": "Mailbox full" }
+    ]
+}
+```
+
+---
+
+## Consultas de status
+
+A classe `NotifyQuery` oferece dois modos: **banco local** (sem HTTP, instantâneo) e **servidor** (tempo real via API).
+
+### Consultas locais
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// ── Notificações ─────────────────────────────────────────────────────────────
+
+// Todos os logs — retorna Eloquent Builder, use ->get(), ->paginate(), etc.
+NotifyQuery::logs()->latest()->paginate(25);
+
+// Com filtros
+NotifyQuery::logs()->where('channel', 'sms')->where('status', 'error')->get();
+
+// Logs de um model específico (User, Authentication, etc.)
+NotifyQuery::logsFor($user)->latest()->get();
+NotifyQuery::logsFor($user)->where('channel', 'email')->get();
+
+// Buscar pelo ID retornado pelo servidor (útil no webhook)
+NotifyQuery::findLog('server-notification-uuid');
+
+// ── Campanhas ─────────────────────────────────────────────────────────────────
+
+NotifyQuery::campaigns()->where('channel', 'sms')->latest()->get();
+NotifyQuery::campaigns()->where('status', 'completed')->paginate(10);
+
+// Buscar pelo ID do servidor
+NotifyQuery::findCampaign('server-campaign-uuid');
+
+// Contatos de uma campanha
+NotifyQuery::campaignContacts('local-campaign-uuid')->where('status', 'failed')->get();
+NotifyQuery::campaignContacts('local-campaign-uuid')->where('status', 'pending')->count();
+```
+
+---
+
+### Consultas no servidor
+
+Consultas em tempo real via API do servidor (faz requisição HTTP com a `NOTIFY_SERVICE_KEY`).
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// ── Notificações ─────────────────────────────────────────────────────────────
+
+// Listar — retorna ['data' => [...], 'meta' => [...]]
+$result = NotifyQuery::server()->notifications()
+    ->channel('sms')          // sms|email|push|apns|telegram|slack|discord|teams|websocket|webhook
+    ->status('send')          // created|sending|send|delivered|ready|error
+    ->from('2026-01-01')
+    ->to('2026-03-31')
+    ->campaignId('uuid')      // filtra por campanha
+    ->perPage(50)             // máx: 100, default: 25
+    ->page(2)
+    ->get();
+
+$result['data']; // array de notificações
+$result['meta']; // total, per_page, current_page, last_page
+
+// Detalhes + timeline de eventos de uma notificação
+$notification = NotifyQuery::server()->notification('server-uuid');
+// Inclui todos os campos + array 'events' com a timeline completa
+
+// Só a timeline (ideal para polling)
+$events = NotifyQuery::server()->notificationEvents('server-uuid');
+$events['current_status']; // status atual
+$events['events'];         // array de eventos com timestamps
+
+// ── Campanhas ─────────────────────────────────────────────────────────────────
+
+// Listar campanhas
+$result = NotifyQuery::server()->campaigns()
+    ->channel('email')              // sms|email
+    ->status('completed')           // pending|processing|paused|completed|failed|cancelled
+    ->from('2026-01-01')
+    ->to('2026-03-31')
+    ->perPage(25)
+    ->get();
+
+// Detalhes + progresso de uma campanha
+$campaign = NotifyQuery::server()->campaign('server-campaign-uuid');
+$campaign['progress_percent']; // 0 a 100
+$campaign['pending_count'];    // contatos ainda não processados
+$campaign['sent_count'];
+$campaign['failed_count'];
+
+// Contatos de uma campanha
+$result = NotifyQuery::server()->campaignContacts('server-campaign-uuid')
+    ->status('failed')              // pending|sending|sent|failed|skipped
+    ->search('joao@email.com')      // busca parcial por email ou telefone
+    ->perPage(100)                  // máx: 200, default: 50
+    ->page(1)
+    ->get();
+
+$result['campaign']; // dados resumidos da campanha
+$result['data'];     // array de contatos
+$result['meta'];     // paginação
+
+// Detalhe de um contato específico
+$contact = NotifyQuery::server()->campaignContact('campaign-uuid', 'contact-uuid');
+// Inclui notification_id — use para cruzar com ->notification()
+```
+
+---
+
+## Modelos
+
+### `NotifyLog`
+
+```php
+use RiseTechApps\Notify\Models\NotifyLog;
+
+$log = NotifyLog::find('uuid');
+
+$log->channel;                // 'sms', 'email', etc.
+$log->status;                 // 'sending', 'sent', 'delivered', 'error'
+$log->server_notification_id; // UUID retornado pelo servidor
+$log->payload;                // array — o que foi enviado
+$log->server_response;        // array — resposta do servidor
+$log->sent_at;                // Carbon
+$log->delivered_at;           // Carbon
+$log->failed_at;              // Carbon
+
+// Relacionamentos
+$log->notifiable;             // model notificado (User, Authentication, etc.)
+$log->campaign;               // NotifyCampaign ou null
+
+// Métodos
+$log->markAsSent($serverId, $response);
+$log->markAsDelivered();
+$log->markAsFailed($errorMessage, $response);
+```
+
+---
+
+### `NotifyCampaign`
+
+```php
+use RiseTechApps\Notify\Models\NotifyCampaign;
+
+$campaign = NotifyCampaign::find('uuid');
+
+$campaign->name;               // nome
+$campaign->channel;            // 'sms' ou 'email'
+$campaign->status;             // 'pending', 'processing', 'completed', etc.
+$campaign->server_campaign_id; // UUID no servidor
+$campaign->total_contacts;
+$campaign->sent_count;
+$campaign->failed_count;
+$campaign->progress;           // atributo computado: % concluído (0-100)
+$campaign->scheduled_at;       // Carbon ou null
+$campaign->started_at;         // Carbon ou null
+$campaign->finished_at;        // Carbon ou null
+
+// Relacionamentos
+$campaign->contacts;           // HasMany NotifyCampaignContact
+$campaign->logs;               // HasMany NotifyLog
+
+// Métodos
+$campaign->syncFromWebhook($data); // atualiza contadores via payload do webhook
+```
+
+---
+
+### `NotifyCampaignContact`
+
+```php
+use RiseTechApps\Notify\Models\NotifyCampaignContact;
+
+$contact = NotifyCampaignContact::find('uuid');
+
+$contact->contact;    // email ou telefone
+$contact->name;
+$contact->status;     // 'pending', 'sent', 'failed', 'skipped'
+$contact->error;      // mensagem de erro (se failed)
+$contact->sent_at;    // Carbon
+
+// Relacionamento
+$contact->campaign;   // NotifyCampaign
+```
+
+---
+
+## Eventos Laravel
+
+O package dispara eventos nativos do Laravel em cada etapa do envio individual:
+
+```php
+use RiseTechApps\Notify\Events\NotifySendingEvent;
+use RiseTechApps\Notify\Events\NotifySentEvent;
+use RiseTechApps\Notify\Events\NotifyFailedEvent;
+
+// NotifySendingEvent                                         — antes do envio HTTP
+// NotifySentEvent($notifiable, $notification, $response, $channel)  — envio bem-sucedido
+// NotifyFailedEvent($notifiable, $notification, $exception, $channel) — falha no envio
+```
+
+Registre listeners no `EventServiceProvider`:
+
+```php
+protected $listen = [
+    \RiseTechApps\Notify\Events\NotifySentEvent::class => [
+        App\Listeners\LogNotificacaoEnviada::class,
+    ],
+    \RiseTechApps\Notify\Events\NotifyFailedEvent::class => [
+        App\Listeners\AlertarFalhaDeNotificacao::class,
+    ],
+];
+```
+
+---
 
 ## Licença
 
-O pacote `Notify Service for Laravel` é um software de código aberto licenciado sob a [Licença MIT](LICENSE.md).
+MIT — veja [LICENSE.md](LICENSE.md) para detalhes.
 
-***
-
-[^1]: O NotifyKit é uma plataforma de comunicação que oferece serviços de envio de e-mail e SMS via API. Este pacote atua como um *wrapper* para integrar esses serviços ao sistema de Notificações do Laravel.
+&copy; 2026 [Rise Tech Apps](https://risetech.com.br)
