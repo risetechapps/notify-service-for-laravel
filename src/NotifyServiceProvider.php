@@ -22,6 +22,38 @@ class NotifyServiceProvider extends ServiceProvider
         Notification::extend('notify.mail', function ($app) {
             return new Channel\NotifyChannelMail();
         });
+
+        Notification::extend('notify.push', function ($app) {
+            return new Channel\NotifyChannelPush();
+        });
+
+        Notification::extend('notify.apns', function ($app) {
+            return new Channel\NotifyChannelApns();
+        });
+
+        Notification::extend('notify.telegram', function ($app) {
+            return new Channel\NotifyChannelTelegram();
+        });
+
+        Notification::extend('notify.slack', function ($app) {
+            return new Channel\NotifyChannelSlack();
+        });
+
+        Notification::extend('notify.discord', function ($app) {
+            return new Channel\NotifyChannelDiscord();
+        });
+
+        Notification::extend('notify.teams', function ($app) {
+            return new Channel\NotifyChannelTeams();
+        });
+
+        Notification::extend('notify.websocket', function ($app) {
+            return new Channel\NotifyChannelWebSocket();
+        });
+
+        Notification::extend('notify.webhook', function ($app) {
+            return new Channel\NotifyChannelWebhook();
+        });
     }
 
     /**
