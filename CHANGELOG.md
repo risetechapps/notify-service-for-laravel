@@ -4,6 +4,8 @@ Todas as mudanças notáveis para o pacote `risetechapps/notify-service-for-lara
 
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), e este projeto adere ao [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-17
+- Implementado envio de arquivo html nas campanhas.
 
 ## [1.1.0] - 2026-03-12
 
