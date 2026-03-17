@@ -14,25 +14,25 @@ Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **
 - [Configuração](#configuração)
 - [Canais disponíveis](#canais-disponíveis)
 - [Notificações individuais](#notificações-individuais)
-    - [SMS](#sms)
-    - [Email](#email)
-    - [Push FCM](#push-fcm)
-    - [APNS Apple Push](#apns-apple-push)
-    - [Telegram](#telegram)
-    - [Slack](#slack)
-    - [Discord](#discord)
-    - [Teams](#teams)
-    - [WebSocket](#websocket)
-    - [Webhook](#webhook)
+  - [SMS](#sms)
+  - [Email](#email)
+  - [Push FCM](#push-fcm)
+  - [APNS Apple Push](#apns-apple-push)
+  - [Telegram](#telegram)
+  - [Slack](#slack)
+  - [Discord](#discord)
+  - [Teams](#teams)
+  - [WebSocket](#websocket)
+  - [Webhook](#webhook)
 - [Campanhas em massa](#campanhas-em-massa)
-    - [Campanha SMS](#campanha-sms)
-    - [Campanha Email](#campanha-email)
-    - [Fontes de contatos](#fontes-de-contatos)
+  - [Campanha SMS](#campanha-sms)
+  - [Campanha Email](#campanha-email)
+  - [Fontes de contatos](#fontes-de-contatos)
 - [Rastreamento automático](#rastreamento-automático)
 - [Webhook receiver](#webhook-receiver)
 - [Consultas de status](#consultas-de-status)
-    - [Consultas locais](#consultas-locais)
-    - [Consultas no servidor](#consultas-no-servidor)
+  - [Consultas locais](#consultas-locais)
+  - [Consultas no servidor](#consultas-no-servidor)
 - [Modelos](#modelos)
 - [Eventos Laravel](#eventos-laravel)
 
@@ -49,6 +49,7 @@ Publique a config e rode as migrations:
 ```bash
 php artisan vendor:publish --provider="RiseTechApps\Notify\NotifyServiceProvider" --tag="config"
 php artisan migrate
+composer dump-autoload
 ```
 
 ---
@@ -443,6 +444,116 @@ public function toNotifyWebhook($notifiable): NotifyWebhook
 
 ---
 
+## Gerenciamento de configurações de driver
+
+As credenciais de cada canal ficam salvas no servidor. Você pode ter múltiplas configurações por canal — uma marcada como `is_default` é usada automaticamente quando nenhum `config_id` é informado no envio.
+
+```php
+use RiseTechApps\Notify\NotifyConfig;
+
+// ── Listar ────────────────────────────────────────────────────────────────────
+
+NotifyConfig::all();             // todas as configs
+NotifyConfig::channel('sms');    // só as configs de SMS
+NotifyConfig::channel('email');  // só as configs de Email
+
+// ── Detalhes ─────────────────────────────────────────────────────────────────
+
+$config = NotifyConfig::find($id);
+// Retorna: id, channel, driver, label, is_default, active, credential_keys
+// credential_keys = chaves das credenciais (nunca os valores)
+
+// ── Criar ─────────────────────────────────────────────────────────────────────
+
+$config = NotifyConfig::create()
+    ->channel('sms')
+    ->driver('twilio')
+    ->label('Twilio Principal')
+    ->credentials([
+        'account_sid' => 'ACxxxxxxxxxxxxxxxx',
+        'auth_token'  => 'xxxxxxxxxxxxxxxx',
+        'from'        => '+15551234567',
+    ])
+    ->asDefault()   // define como padrão do canal
+    ->save();
+
+// $config retorna: ['id' => '...', 'channel' => 'sms', 'driver' => 'twilio', 'label' => '...']
+
+NotifyConfig::create()
+    ->channel('email')
+    ->driver('resend')
+    ->label('Resend Transacional')
+    ->credentials(['api_key' => 're_xxxxxxxx'])
+    ->save();
+
+// ── Atualizar ─────────────────────────────────────────────────────────────────
+// As credenciais são mescladas (merge parcial) — envie só o que quer alterar
+
+NotifyConfig::update($id)
+    ->label('Twilio Backup')
+    ->credentials(['auth_token' => 'novo-token'])
+    ->save();
+
+NotifyConfig::update($id)
+    ->active(false)   // desativar
+    ->save();
+
+// ── Definir como padrão ───────────────────────────────────────────────────────
+
+NotifyConfig::setDefault($id);  // remove is_default das outras configs do mesmo canal
+
+// ── Remover ───────────────────────────────────────────────────────────────────
+
+NotifyConfig::delete($id);
+```
+
+### Credenciais por driver
+
+| Canal | Driver | Credenciais necessárias |
+|---|---|---|
+| `sms` | `twilio` | `account_sid`, `auth_token`, `from` |
+| `sms` | `zenvia` | `api_token`, `from` |
+| `sms` | `mobizon` | `api_key`, `from` |
+| `email` | `smtp` | `host`, `port`, `username`, `password`, `encryption` |
+| `email` | `mailgun` | `api_key`, `domain`, `endpoint` |
+| `email` | `resend` | `api_key` |
+| `email` | `sendgrid` | `api_key` |
+| `email` | `ses` | `key`, `secret`, `region` |
+| `email` | `postmark` | `server_token` |
+| `push` | `fcm` | `credentials_json` |
+| `apns` | `apns` | `key_id`, `team_id`, `bundle_id`, `private_key` |
+| `telegram` | `telegram` | `bot_token` |
+| `slack` | `slack` | `bot_token` |
+| `discord` | `discord` | `webhook_url` |
+| `teams` | `teams` | `webhook_url` |
+| `websocket` | `pusher` | `app_id`, `app_key`, `app_secret`, `cluster` |
+| `webhook` | `webhook` | `default_url` |
+
+### Usando uma config específica no envio
+
+Todos os canais e o `NotifyCampaignBuilder` aceitam `->configId(string)` para sobrescrever a config padrão:
+
+```php
+// Notificação individual
+public function toNotifySms($notifiable): NotifySms
+{
+    return (new NotifySms)
+        ->to($notifiable->phone)
+        ->content('Mensagem')
+        ->configId('uuid-da-config-twilio-backup');
+}
+
+// Campanha
+NotifyCampaignBuilder::sms()
+    ->name('Promo')
+    ->content('Olá {{name}}!')
+    ->contacts([...])
+    ->configId('uuid-da-config-zenvia')
+    ->send();
+```
+
+---
+
 ## Campanhas em massa
 
 Campanhas não usam o sistema de notificações do Laravel — são disparadas diretamente pela classe `NotifyCampaignBuilder`. Suportam até **10.000 contatos** por disparo com rate limiting configurável.
@@ -551,6 +662,201 @@ $campaign = NotifyCampaignBuilder::email()
 **Via Collection:**
 ```php
 ->fromCollection($users, contactColumn: 'email', nameColumn: 'full_name')
+```
+
+---
+
+## Gestão de configurações de driver
+
+Use `NotifyConfiguration` para criar e gerenciar as credenciais de cada canal diretamente no servidor. As credenciais são armazenadas criptografadas e nunca são devolvidas nas consultas — apenas as chaves.
+
+Ao criar uma configuração com `is_default: true`, ela passa a ser usada automaticamente em todos os envios daquele canal que não passarem um `configId` explícito.
+
+### Criar configuração
+
+```php
+use RiseTechApps\Notify\NotifyConfiguration;
+
+// SMS — Twilio
+NotifyConfiguration::create([
+    'channel'    => 'sms',
+    'driver'     => 'twilio',
+    'label'      => 'Twilio Principal',
+    'is_default' => true,
+    'credentials' => [
+        'account_sid' => 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'auth_token'  => 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+        'from'        => '+15551234567',
+    ],
+]);
+
+// SMS — Zenvia
+NotifyConfiguration::create([
+    'channel'    => 'sms',
+    'driver'     => 'zenvia',
+    'label'      => 'Zenvia',
+    'credentials' => [
+        'api_token' => 'seu-token-zenvia',
+        'from'      => 'NomeSender',
+    ],
+]);
+
+// Email — SMTP
+NotifyConfiguration::create([
+    'channel'    => 'email',
+    'driver'     => 'smtp',
+    'label'      => 'SMTP Produção',
+    'is_default' => true,
+    'credentials' => [
+        'host'       => 'smtp.mailserver.com',
+        'port'       => 587,
+        'username'   => 'user@dominio.com',
+        'password'   => 'senha',
+        'encryption' => 'tls',
+    ],
+]);
+
+// Email — Resend
+NotifyConfiguration::create([
+    'channel'    => 'email',
+    'driver'     => 'resend',
+    'label'      => 'Resend',
+    'is_default' => true,
+    'credentials' => [
+        'api_key' => 're_xxxxxxxxxxxxxxxx',
+    ],
+]);
+
+// Email — Mailgun
+NotifyConfiguration::create([
+    'channel'     => 'email',
+    'driver'      => 'mailgun',
+    'label'       => 'Mailgun',
+    'credentials' => [
+        'api_key' => 'key-xxxxxxxxxxxxxxxx',
+        'domain'  => 'mg.seudominio.com',
+        'region'  => 'us', // ou 'eu'
+    ],
+]);
+
+// Push — FCM
+NotifyConfiguration::create([
+    'channel'    => 'push',
+    'driver'     => 'fcm',
+    'label'      => 'Firebase Produção',
+    'is_default' => true,
+    'credentials' => [
+        'project_id'   => 'seu-projeto-firebase',
+        'private_key'  => '-----BEGIN PRIVATE KEY-----\n...',
+        'client_email' => 'firebase-adminsdk@projeto.iam.gserviceaccount.com',
+    ],
+]);
+
+// Telegram
+NotifyConfiguration::create([
+    'channel'    => 'telegram',
+    'driver'     => 'telegram',
+    'label'      => 'Bot Principal',
+    'is_default' => true,
+    'credentials' => [
+        'bot_token' => '123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    ],
+]);
+
+// Slack
+NotifyConfiguration::create([
+    'channel'    => 'slack',
+    'driver'     => 'slack',
+    'label'      => 'Slack #alertas',
+    'is_default' => true,
+    'credentials' => [
+        'webhook_url' => 'https://hooks.slack.com/services/T.../B.../xxx',
+    ],
+]);
+
+// Discord
+NotifyConfiguration::create([
+    'channel'    => 'discord',
+    'driver'     => 'discord',
+    'label'      => 'Discord #geral',
+    'is_default' => true,
+    'credentials' => [
+        'webhook_url' => 'https://discord.com/api/webhooks/xxx/yyy',
+    ],
+]);
+
+// Teams
+NotifyConfiguration::create([
+    'channel'    => 'teams',
+    'driver'     => 'teams',
+    'label'      => 'Teams Engenharia',
+    'is_default' => true,
+    'credentials' => [
+        'webhook_url' => 'https://outlook.office.com/webhook/xxx',
+    ],
+]);
+
+// WebSocket — Pusher
+NotifyConfiguration::create([
+    'channel'    => 'websocket',
+    'driver'     => 'pusher',
+    'label'      => 'Pusher Produção',
+    'is_default' => true,
+    'credentials' => [
+        'app_id'  => 'xxxxxxx',
+        'app_key' => 'xxxxxxxxxxxxxxxxxxxxxxxx',
+        'secret'  => 'xxxxxxxxxxxxxxxxxxxxxxxx',
+        'cluster' => 'us2',
+    ],
+]);
+```
+
+### Listar, atualizar e remover
+
+```php
+// Listar todas
+NotifyConfiguration::all();
+
+// Filtrar por canal
+NotifyConfiguration::channel('sms');
+NotifyConfiguration::channel('email');
+
+// Buscar por ID (retorna chaves das credenciais, nunca os valores)
+NotifyConfiguration::find('uuid');
+
+// Atualizar — merge parcial nas credenciais (só o que você enviar é alterado)
+NotifyConfiguration::update('uuid', ['label' => 'Novo nome']);
+NotifyConfiguration::update('uuid', ['credentials' => ['password' => 'nova-senha']]);
+NotifyConfiguration::update('uuid', ['active' => false]);
+
+// Definir como padrão do canal
+NotifyConfiguration::setDefault('uuid');
+
+// Remover
+NotifyConfiguration::delete('uuid');
+```
+
+### Usar uma config específica no envio
+
+Quando você quer usar uma config diferente da padrão em um envio pontual, passe o `configId`:
+
+```php
+// Notificação individual
+public function toNotifySms($notifiable): NotifySms
+{
+    return (new NotifySms)
+        ->to($notifiable->phone)
+        ->content('Mensagem pelo remetente secundário.')
+        ->configId('uuid-da-config-alternativa'); // sobrescreve o is_default
+}
+
+// Campanha
+NotifyCampaignBuilder::sms()
+    ->name('Campanha com config específica')
+    ->content('Olá {{name}}!')
+    ->contacts([...])
+    ->configId('uuid-da-config-alternativa')
+    ->send();
 ```
 
 ---
@@ -831,6 +1137,181 @@ protected $listen = [
         App\Listeners\AlertarFalhaDeNotificacao::class,
     ],
 ];
+```
+
+---
+
+## Configurações de driver
+
+Gerencie as credenciais de cada canal diretamente pelo package, sem precisar acessar o painel do servidor.
+
+### Listar
+
+```php
+use RiseTechApps\Notify\NotifyDriverConfig;
+
+NotifyDriverConfig::list();          // todas as configs
+NotifyDriverConfig::list('sms');     // filtra por canal
+NotifyDriverConfig::get('uuid');     // detalhes (chaves das credenciais, sem valores)
+```
+
+### SMS
+
+```php
+// Twilio
+NotifyDriverConfig::twilio('Twilio Principal')
+    ->sid('ACxxxxxxxxxxxxxxxx')
+    ->token('xxxxxxxxxxxxxxxx')
+    ->from('+5511999999999')
+    ->asDefault()
+    ->save();
+
+// Zenvia
+NotifyDriverConfig::zenvia('Zenvia Prod')
+    ->apiToken('xxxxxxxxxxxxxxxx')
+    ->senderId('EMPRESA')
+    ->save();
+
+// Mobizon
+NotifyDriverConfig::mobizon('Mobizon')
+    ->key('xxxxxxxxxxxxxxxx')
+    ->save();
+```
+
+### Email
+
+```php
+// SMTP
+NotifyDriverConfig::smtp('SMTP Produção')
+    ->host('smtp.empresa.com')
+    ->port(587)
+    ->username('user@empresa.com')
+    ->password('senha')
+    ->encryption('tls')
+    ->asDefault()
+    ->save();
+
+// Mailgun
+NotifyDriverConfig::mailgun('Mailgun')
+    ->domain('mg.empresa.com')
+    ->secret('key-xxxxxxxxxxxxxxxx')
+    ->save();
+
+// Resend
+NotifyDriverConfig::resend('Resend')
+    ->apiKey('re_xxxxxxxxxxxxxxxx')
+    ->save();
+
+// SendGrid
+NotifyDriverConfig::sendgrid('SendGrid')
+    ->apiKey('SG.xxxxxxxxxxxxxxxx')
+    ->save();
+
+// Amazon SES
+NotifyDriverConfig::ses('SES us-east-1')
+    ->key('AKIAXXXXXXXXXXXXXXXX')
+    ->secret('xxxxxxxxxxxxxxxx')
+    ->region('us-east-1')
+    ->save();
+
+// Postmark
+NotifyDriverConfig::postmark('Postmark')
+    ->token('xxxxxxxxxxxxxxxx')
+    ->save();
+```
+
+### Push / APNS
+
+```php
+// FCM (Android)
+NotifyDriverConfig::fcm('FCM Android')
+    ->projectId('meu-projeto-firebase')
+    ->credentialsFile('/path/to/service-account.json')
+    ->save();
+
+// APNS (iOS)
+NotifyDriverConfig::apns('APNS iOS')
+    ->keyPath('/path/to/AuthKey.p8')
+    ->keyId('XXXXXXXXXX')
+    ->teamId('XXXXXXXXXX')
+    ->bundleId('com.empresa.app')
+    ->production(true)
+    ->save();
+```
+
+### Mensageiros
+
+```php
+// Telegram
+NotifyDriverConfig::telegram('Telegram Bot')
+    ->botToken('123456789:AAxxxxxxxxxx')
+    ->save();
+
+// Slack
+NotifyDriverConfig::slack('Slack Workspace')
+    ->webhookUrl('https://hooks.slack.com/services/xxx/yyy/zzz')
+    ->defaultChannel('#geral')
+    ->save();
+
+// Discord
+NotifyDriverConfig::discord('Discord Server')
+    ->webhookUrl('https://discord.com/api/webhooks/xxx/yyy')
+    ->defaultUsername('NotifyBot')
+    ->avatarUrl('https://app.com/bot-avatar.png')
+    ->save();
+
+// Teams
+NotifyDriverConfig::teams('Teams Canal Engenharia')
+    ->webhookUrl('https://outlook.office.com/webhook/xxx')
+    ->save();
+
+// Pusher (WebSocket)
+NotifyDriverConfig::pusher('Pusher Produção')
+    ->appId('xxxxxxxx')
+    ->key('xxxxxxxxxxxxxxxx')
+    ->secret('xxxxxxxxxxxxxxxx')
+    ->cluster('mt1')
+    ->save();
+```
+
+### Atualizar, definir padrão e remover
+
+```php
+// Atualiza campos — credenciais fazem merge parcial (só o que você enviar é atualizado)
+NotifyDriverConfig::update('config-uuid', [
+    'label'       => 'Novo nome',
+    'credentials' => ['password' => 'nova-senha'],  // só atualiza a senha, o resto permanece
+    'is_default'  => true,
+]);
+
+// Define como padrão para o canal
+NotifyDriverConfig::setDefault('config-uuid');
+
+// Remove
+NotifyDriverConfig::delete('config-uuid');
+```
+
+### Usando uma config específica em um envio
+
+Depois de criar a config no servidor e ter o UUID dela, passe o `config_id` na mensagem:
+
+```php
+// Notificação individual
+public function toNotifySms($notifiable): NotifySms
+{
+    return (new NotifySms)
+        ->to($notifiable->phone)
+        ->content('Mensagem via Zenvia')
+        ->configId('uuid-da-config-zenvia');  // sobrescreve a config padrão
+}
+
+// Campanha
+NotifyCampaignBuilder::sms()
+    ->name('Promo')
+    ->content('Olá {{name}}!')
+    ->contacts($contacts)
+    ->configId('uuid-da-config-zenvia')       // sobrescreve a config padrão
+    ->send();
 ```
 
 ---

@@ -63,6 +63,7 @@ class NotifyCampaignBuilder
     protected ?string $webhookUrl = null;
     protected int $ratePerMinute = 60;
     protected ?string $scheduledAt = null;
+    protected ?array $credentials = null;
 
     // Contatos resolvidos (array final)
     protected array $contacts = [];
@@ -138,6 +139,20 @@ class NotifyCampaignBuilder
         return $this;
     }
 
+    /**
+     * Credenciais inline para este envio — sobrescreve a config padrão do servidor.
+     * Use NotifyCredentials para montar o array correto para cada driver.
+     *
+     * Exemplo:
+     *   ->credentials(NotifyCredentials::twilio('SID', 'TOKEN', '+15551234567'))
+     *   ->credentials(NotifyCredentials::resend('re_xxxxxxxxxxxx'))
+     */
+    public function credentials(array $credentials): static
+    {
+        $this->credentials = $credentials;
+        return $this;
+    }
+
     // ── Fontes de contatos ────────────────────────────────────────────────────
 
     /**
@@ -165,25 +180,25 @@ class NotifyCampaignBuilder
      * Contatos via query Eloquent — processada em chunks no send().
      * Não carrega todos os registros em memória.
      *
-     * @param Builder     $query          Query já montada (sem ->get())
-     * @param string      $contactColumn  Coluna com telefone (sms) ou email (email)
-     * @param string|null $nameColumn     Coluna com o nome (opcional)
+     * @param Builder $query Query já montada (sem ->get())
+     * @param string $contactColumn Coluna com telefone (sms) ou email (email)
+     * @param string|null $nameColumn Coluna com o nome (opcional)
      */
     public function fromQuery(Builder $query, string $contactColumn, ?string $nameColumn = null): static
     {
-        $this->querySource        = $query;
+        $this->querySource = $query;
         $this->queryContactColumn = $contactColumn;
-        $this->queryNameColumn    = $nameColumn;
-        $this->contacts           = [];
+        $this->queryNameColumn = $nameColumn;
+        $this->contacts = [];
         return $this;
     }
 
     /**
      * Contatos via Collection.
      *
-     * @param Collection  $collection
-     * @param string      $contactColumn  Atributo com telefone (sms) ou email (email)
-     * @param string|null $nameColumn     Atributo com o nome (opcional)
+     * @param Collection $collection
+     * @param string $contactColumn Atributo com telefone (sms) ou email (email)
+     * @param string|null $nameColumn Atributo com o nome (opcional)
      */
     public function fromCollection(Collection $collection, string $contactColumn, ?string $nameColumn = null): static
     {
@@ -214,8 +229,8 @@ class NotifyCampaignBuilder
     public function from(string $from, string $nameFrom = ''): static
     {
         // SMS usa só o primeiro argumento; email usa os dois
-        $this->smsFrom       = $from;
-        $this->emailFrom     = $from;
+        $this->smsFrom = $from;
+        $this->emailFrom = $from;
         $this->emailNameFrom = $nameFrom;
         return $this;
     }
@@ -286,36 +301,36 @@ class NotifyCampaignBuilder
 
     public function send(): NotifyCampaignModel
     {
-        $contacts   = $this->resolveContacts();
-        $template   = $this->buildTemplate();
+        $contacts = $this->resolveContacts();
+        $template = $this->buildTemplate();
         $webhookUrl = $this->webhookUrl ?: config('notify.webhook');
 
         // Salva a campanha localmente
         $campaign = NotifyCampaignModel::create([
             'notifiable_type' => 'system',
-            'notifiable_id'   => '0',
-            'channel'         => $this->channel,
-            'name'            => $this->name,
-            'status'          => 'pending',
-            'template'        => $template,
-            'config_id'       => $this->configId,
-            'webhook_url'     => $webhookUrl,
+            'notifiable_id' => '0',
+            'channel' => $this->channel,
+            'name' => $this->name,
+            'status' => 'pending',
+            'template' => $template,
+            'config_id' => $this->configId,
+            'webhook_url' => $webhookUrl,
             'rate_per_minute' => $this->ratePerMinute,
-            'scheduled_at'    => $this->scheduledAt,
-            'total_contacts'  => count($contacts),
+            'scheduled_at' => $this->scheduledAt,
+            'total_contacts' => count($contacts),
         ]);
 
         // Salva os contatos em lotes de 500
         $contactKey = $this->contactKey();
         $rows = array_map(fn($c) => [
-            'id'                 => Str::uuid()->toString(),
+            'id' => Str::uuid()->toString(),
             'notify_campaign_id' => $campaign->id,
-            'contact'            => $c[$contactKey] ?? null,
-            'name'               => $c['name']      ?? null,
-            'extra_data'         => isset($c['extra_data']) ? json_encode($c['extra_data']) : null,
-            'status'             => 'pending',
-            'created_at'         => now(),
-            'updated_at'         => now(),
+            'contact' => $c[$contactKey] ?? null,
+            'name' => $c['name'] ?? null,
+            'extra_data' => isset($c['extra_data']) ? json_encode($c['extra_data']) : null,
+            'status' => 'pending',
+            'created_at' => now(),
+            'updated_at' => now(),
         ], $contacts);
 
         foreach (array_chunk($rows, 500) as $chunk) {
@@ -324,11 +339,11 @@ class NotifyCampaignBuilder
 
         // Log do disparo
         $log = NotifyLog::create([
-            'notifiable_type'    => 'system',
-            'notifiable_id'      => '0',
-            'channel'            => $this->channel,
-            'status'             => 'sending',
-            'payload'            => $this->buildPayload($contacts, $template, $webhookUrl),
+            'notifiable_type' => 'system',
+            'notifiable_id' => '0',
+            'channel' => $this->channel,
+            'status' => 'sending',
+            'payload' => $this->buildPayload($contacts, $template, $webhookUrl),
             'notify_campaign_id' => $campaign->id,
         ]);
 
@@ -351,9 +366,92 @@ class NotifyCampaignBuilder
             // O servidor retorna 'status': true (boolean de aceite), não uma string de estado.
             // O estado real da campanha vem via webhook depois.
             $campaign->update([
-                'server_campaign_id' => $responseJson['campaign_id']    ?? null,
-                'status'             => 'processing',
-                'total_contacts'     => $responseJson['total_contacts'] ?? $campaign->total_contacts,
+                'server_campaign_id' => $responseJson['campaign_id'] ?? null,
+                'status' => 'processing',
+                'total_contacts' => $responseJson['total_contacts'] ?? $campaign->total_contacts,
+            ]);
+
+            $log->markAsSent($responseJson['campaign_id'] ?? '', $responseJson);
+
+        } catch (\Exception $e) {
+            $campaign->update(['status' => 'failed']);
+            $log->markAsFailed($e->getMessage());
+            report($e);
+        }
+
+        return $campaign;
+    }
+
+    public function sendHtml(string $path): NotifyCampaignModel
+    {
+        $contacts = $this->resolveContacts();
+        $template = $this->buildTemplateHtml($path);
+        $webhookUrl = $this->webhookUrl ?: config('notify.webhook');
+
+        // Salva a campanha localmente
+        $campaign = NotifyCampaignModel::create([
+            'notifiable_type' => 'system',
+            'notifiable_id' => '0',
+            'channel' => $this->channel,
+            'name' => $this->name,
+            'status' => 'pending',
+            'template' => $template,
+            'config_id' => $this->configId,
+            'webhook_url' => $webhookUrl,
+            'rate_per_minute' => $this->ratePerMinute,
+            'scheduled_at' => $this->scheduledAt,
+            'total_contacts' => count($contacts),
+        ]);
+
+        // Salva os contatos em lotes de 500
+        $contactKey = $this->contactKey();
+        $rows = array_map(fn($c) => [
+            'id' => Str::uuid()->toString(),
+            'notify_campaign_id' => $campaign->id,
+            'contact' => $c[$contactKey] ?? null,
+            'name' => $c['name'] ?? null,
+            'extra_data' => isset($c['extra_data']) ? json_encode($c['extra_data']) : null,
+            'status' => 'pending',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], $contacts);
+
+        foreach (array_chunk($rows, 500) as $chunk) {
+            NotifyCampaignContact::insert($chunk);
+        }
+
+        // Log do disparo
+        $log = NotifyLog::create([
+            'notifiable_type' => 'system',
+            'notifiable_id' => '0',
+            'channel' => $this->channel,
+            'status' => 'sending',
+            'payload' => $this->buildPayload($contacts, $template, $webhookUrl),
+            'notify_campaign_id' => $campaign->id,
+        ]);
+
+        // Envia ao servidor
+        try {
+            $endpoint = $this->channel === 'sms' ? 'sms' : 'mail';
+
+            $response = Http::withHeaders(['X-API-KEY' => config('notify.key')])
+                ->acceptJson()
+                ->post("https://notifykit.app.br/api/v1/campaigns/{$endpoint}",
+                    $this->buildPayload($contacts, $template, $webhookUrl)
+                );
+
+            if ($response->failed()) {
+                throw new \Exception('Error creating campaign: ' . $response->body());
+            }
+
+            $responseJson = $response->json();
+
+            // O servidor retorna 'status': true (boolean de aceite), não uma string de estado.
+            // O estado real da campanha vem via webhook depois.
+            $campaign->update([
+                'server_campaign_id' => $responseJson['campaign_id'] ?? null,
+                'status' => 'processing',
+                'total_contacts' => $responseJson['total_contacts'] ?? $campaign->total_contacts,
             ]);
 
             $log->markAsSent($responseJson['campaign_id'] ?? '', $responseJson);
@@ -373,7 +471,7 @@ class NotifyCampaignBuilder
     {
         // Se veio de fromQuery(), processa agora em chunks
         if ($this->querySource !== null) {
-            $contacts   = [];
+            $contacts = [];
             $contactKey = $this->contactKey();
 
             $this->querySource->chunk(500, function ($rows) use (&$contacts, $contactKey) {
@@ -405,38 +503,52 @@ class NotifyCampaignBuilder
         if ($this->channel === 'sms') {
             return array_filter([
                 'content' => $this->smsContent,
-                'from'    => $this->smsFrom ?: config('app.name'),
+                'from' => $this->smsFrom ?: config('app.name'),
             ], fn($v) => $v !== '' && !is_null($v));
         }
 
         // Email
         return array_filter([
-            'email_from'      => $this->emailFrom     ?: 'no-reply@risetech.com.br',
-            'name_from'       => $this->emailNameFrom ?: 'RiseTech',
-            'subject'         => $this->emailSubject,
+            'email_from' => $this->emailFrom ?: 'no-reply@risetech.com.br',
+            'name_from' => $this->emailNameFrom ?: 'RiseTech',
+            'subject' => $this->emailSubject,
             'subject_message' => $this->emailSubjectMessage,
-            'theme'           => $this->emailTheme,
-            'app_name'        => config('notify.from_name', config('app.name')),
-            'line'            => $this->emailLine,
-            'line_header'     => $this->emailLineHeader ?: null,
-            'line_footer'     => $this->emailLineFooter ?: null,
-            'action'          => $this->emailAction    ?: null,
-            'tables'          => $this->emailTables    ?: null,
-            'lists'           => $this->emailLists     ?: null,
-            'signature'       => $this->emailSignature,
+            'theme' => $this->emailTheme,
+            'app_name' => config('notify.from_name', config('app.name')),
+            'line' => $this->emailLine,
+            'line_header' => $this->emailLineHeader ?: null,
+            'line_footer' => $this->emailLineFooter ?: null,
+            'action' => $this->emailAction ?: null,
+            'tables' => $this->emailTables ?: null,
+            'lists' => $this->emailLists ?: null,
+            'signature' => $this->emailSignature,
+        ], fn($v) => !is_null($v));
+    }
+
+    protected function buildTemplateHtml(string $html): array
+    {
+        // Email
+        return array_filter([
+            'email_from' => $this->emailFrom ?: 'no-reply@risetech.com.br',
+            'name_from' => $this->emailNameFrom ?: 'RiseTech',
+            'subject' => $this->emailSubject,
+            'subject_message' => $this->emailSubjectMessage,
+            'app_name' => config('notify.from_name', config('app.name')),
+            'html_raw' => file_get_contents($html),
         ], fn($v) => !is_null($v));
     }
 
     protected function buildPayload(array $contacts, array $template, string $webhookUrl): array
     {
         return array_filter([
-            'name'            => $this->name,
-            'template'        => $template,
-            'contacts'        => $contacts,
-            'config_id'       => $this->configId,
-            'webhook_url'     => $webhookUrl,
+            'name' => $this->name,
+            'template' => $template,
+            'contacts' => $contacts,
+            'config_id' => $this->configId,
+            'credentials' => $this->credentials,
+            'webhook_url' => $webhookUrl,
             'rate_per_minute' => $this->ratePerMinute !== 60 ? $this->ratePerMinute : null,
-            'scheduled_at'    => $this->scheduledAt,
+            'scheduled_at' => $this->scheduledAt,
         ], fn($v) => !is_null($v));
     }
 }
