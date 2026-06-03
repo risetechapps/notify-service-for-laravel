@@ -38,8 +38,8 @@ class NotifyChannelSlack extends NotifyChannel
             }
 
             $log = NotifyLog::create([
-                'notifiable_type' => get_class($notifiable),
-                'notifiable_id'   => $notifiable->getKey(),
+                'notifiable_type' => $this->notifiableType($notifiable),
+                'notifiable_id'   => $this->notifiableId($notifiable),
                 'channel'         => 'slack',
                 'status'          => 'sending',
                 'payload'         => $data,

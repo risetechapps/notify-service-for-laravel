@@ -12,9 +12,11 @@ return new class extends Migration
         Schema::create('notify_logs', function (Blueprint $table) {
             $table->uuid('id')->primary();
 
-            // Model que disparou a notificação (polimórfico)
+            // Model que disparou a notificação (polimórfico).
+            // notifiable_id é nullable: envios on-demand (Notification::route())
+            // usam AnonymousNotifiable, que não possui chave.
             $table->string('notifiable_type');
-            $table->string('notifiable_id');
+            $table->string('notifiable_id')->nullable();
             $table->index(['notifiable_type', 'notifiable_id']);
 
             // Canal: sms | mail | push | apns | telegram | slack | discord | teams | websocket | webhook
