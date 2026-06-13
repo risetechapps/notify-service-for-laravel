@@ -10,14 +10,11 @@ use RiseTechApps\Notify\Events\NotifyFailedEvent;
 use RiseTechApps\Notify\Events\NotifySendingEvent;
 use RiseTechApps\Notify\Events\NotifySentEvent;
 use RiseTechApps\Notify\Message\NotifyMail;
-use RiseTechApps\Notify\Models\NotifyLog;
 
 class NotifyChannelMail extends NotifyChannel
 {
     public function send($notifiable, Notification $notification)
     {
-        $log = null;
-
         try {
             if (!$to = $notifiable->routeNotificationFor('mail', $notification)) {
                 return null;
@@ -29,23 +26,22 @@ class NotifyChannelMail extends NotifyChannel
                 return null;
             }
 
-            $message->to($to, config('app.name'));
+            // routeNotificationFor('mail') pode devolver "email" ou ["email" => "Nome"].
+            if (is_array($to)) {
+                $email = array_key_first($to);
+                $name  = is_string($to[$email] ?? null) ? $to[$email] : '';
+                $message->to($email, $name);
+            } else {
+                $message->to($to);
+            }
 
             Event::dispatch(new NotifySendingEvent($notifiable, $notification, 'mail'));
 
             $data = $message->toArray();
 
-            if (!($data['webhook_url'] ?? null)) {
+            if (($data['webhook_url'] ?? null) === null) {
                 $data['webhook_url'] = config('notify.webhook');
             }
-
-            $log = NotifyLog::create([
-                'notifiable_type' => $this->notifiableType($notifiable),
-                'notifiable_id'   => $this->notifiableId($notifiable),
-                'channel'         => 'mail',
-                'status'          => 'sending',
-                'payload'         => $data,
-            ]);
 
             $response = Http::withHeaders(['X-API-KEY' => $this->apiKey])
                 ->acceptJson()
@@ -57,8 +53,6 @@ class NotifyChannelMail extends NotifyChannel
 
             $responseJson = $response->json();
 
-            $log->markAsSent($responseJson['notification_id'] ?? '', $responseJson);
-
             Event::dispatch(new NotifySentEvent($notifiable, $notification, $responseJson, 'mail'));
 
             logglyInfo()->performedOn(self::class)
@@ -67,10 +61,6 @@ class NotifyChannelMail extends NotifyChannel
 
             return $responseJson;
         } catch (\Exception $exception) {
-            if ($log) {
-                $log->markAsFailed($exception->getMessage());
-            }
-
             Event::dispatch(new NotifyFailedEvent($notifiable, $notification, $exception, 'mail'));
 
             logglyError()

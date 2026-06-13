@@ -56,9 +56,7 @@ class NotifyServiceProvider extends ServiceProvider
 
     protected function registerPublishes(): void
     {
-        // Migrations sempre carregadas — tabelas precisam existir tanto no console quanto na web
-        $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
-
+        // O pacote não persiste nada localmente — não há migrations a carregar.
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__ . '/../config/config.php' => config_path('notify.php'),

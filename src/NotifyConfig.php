@@ -160,7 +160,7 @@ class NotifyConfig
     {
         return Http::withHeaders(['X-API-KEY' => config('notify.key', '')])
             ->acceptJson()
-            ->baseUrl('https://notifykit.app.br');
+            ->baseUrl(Notify::BASE_URL);
     }
 }
 
@@ -287,7 +287,7 @@ class NotifyConfigBuilder
     {
         $http = Http::withHeaders(['X-API-KEY' => config('notify.key', '')])
             ->acceptJson()
-            ->baseUrl('https://notifykit.app.br');
+            ->baseUrl(Notify::BASE_URL);
 
         if ($this->mode === 'create') {
             $payload = array_filter([

@@ -5,11 +5,7 @@ namespace RiseTechApps\Notify;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Str;
 use RiseTechApps\Notify\Message\EmailTable;
-use RiseTechApps\Notify\Models\NotifyCampaign as NotifyCampaignModel;
-use RiseTechApps\Notify\Models\NotifyCampaignContact;
-use RiseTechApps\Notify\Models\NotifyLog;
 
 /**
  * Fluent builder para campanhas de SMS e Email.
@@ -171,6 +167,12 @@ class NotifyCampaignBuilder
      */
     public function contacts(array $contacts): static
     {
+        // Aceita um único contato achatado: ['phone' => '...', 'name' => '...']
+        // e normaliza para lista, evitando que array_map() itere sobre os valores.
+        if ($contacts !== [] && !array_is_list($contacts)) {
+            $contacts = [$contacts];
+        }
+
         $this->contacts = $contacts;
         $this->querySource = null;
         return $this;
@@ -299,170 +301,56 @@ class NotifyCampaignBuilder
 
     // ── Envio ─────────────────────────────────────────────────────────────────
 
-    public function send(): NotifyCampaignModel
+    /**
+     * Dispara a campanha ao servidor. Não persiste nada localmente.
+     *
+     * @return array Resposta crua do servidor (campaign_id, status, ...) ou [] em falha.
+     */
+    public function send(): array
     {
-        $contacts = $this->resolveContacts();
-        $template = $this->buildTemplate();
+        $contacts   = $this->resolveContacts();
+        $template   = $this->buildTemplate();
         $webhookUrl = $this->webhookUrl ?: config('notify.webhook');
 
-        // Salva a campanha localmente
-        $campaign = NotifyCampaignModel::create([
-            'notifiable_type' => 'system',
-            'notifiable_id' => '0',
-            'channel' => $this->channel,
-            'name' => $this->name,
-            'status' => 'pending',
-            'template' => $template,
-            'config_id' => $this->configId,
-            'webhook_url' => $webhookUrl,
-            'rate_per_minute' => $this->ratePerMinute,
-            'scheduled_at' => $this->scheduledAt,
-            'total_contacts' => count($contacts),
-        ]);
-
-        // Salva os contatos em lotes de 500
-        $contactKey = $this->contactKey();
-        $rows = array_map(fn($c) => [
-            'id' => Str::uuid()->toString(),
-            'notify_campaign_id' => $campaign->id,
-            'contact' => $c[$contactKey] ?? null,
-            'name' => $c['name'] ?? null,
-            'extra_data' => isset($c['extra_data']) ? json_encode($c['extra_data']) : null,
-            'status' => 'pending',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ], $contacts);
-
-        foreach (array_chunk($rows, 500) as $chunk) {
-            NotifyCampaignContact::insert($chunk);
-        }
-
-        // Log do disparo
-        $log = NotifyLog::create([
-            'notifiable_type' => 'system',
-            'notifiable_id' => '0',
-            'channel' => $this->channel,
-            'status' => 'sending',
-            'payload' => $this->buildPayload($contacts, $template, $webhookUrl),
-            'notify_campaign_id' => $campaign->id,
-        ]);
-
-        // Envia ao servidor
-        try {
-            $endpoint = $this->channel === 'sms' ? 'sms' : 'mail';
-
-            $response = Http::withHeaders(['X-API-KEY' => config('notify.key')])
-                ->acceptJson()
-                ->post("https://notifykit.app.br/api/v1/campaigns/{$endpoint}",
-                    $this->buildPayload($contacts, $template, $webhookUrl)
-                );
-
-            if ($response->failed()) {
-                throw new \Exception('Error creating campaign: ' . $response->body());
-            }
-
-            $responseJson = $response->json();
-
-            // O servidor retorna 'status': true (boolean de aceite), não uma string de estado.
-            // O estado real da campanha vem via webhook depois.
-            $campaign->update([
-                'server_campaign_id' => $responseJson['campaign_id'] ?? null,
-                'status' => 'processing',
-                'total_contacts' => $responseJson['total_contacts'] ?? $campaign->total_contacts,
-            ]);
-
-            $log->markAsSent($responseJson['campaign_id'] ?? '', $responseJson);
-
-        } catch (\Exception $e) {
-            $campaign->update(['status' => 'failed']);
-            $log->markAsFailed($e->getMessage());
-            report($e);
-        }
-
-        return $campaign;
+        return $this->dispatch($this->buildPayload($contacts, $template, $webhookUrl));
     }
 
-    public function sendHtml(string $path): NotifyCampaignModel
+    /**
+     * Dispara uma campanha de email com template HTML cru.
+     *
+     * @return array Resposta crua do servidor ou [] em falha.
+     */
+    public function sendHtml(string $path): array
     {
-        $contacts = $this->resolveContacts();
-        $template = $this->buildTemplateHtml($path);
+        $contacts   = $this->resolveContacts();
+        $template   = $this->buildTemplateHtml($path);
         $webhookUrl = $this->webhookUrl ?: config('notify.webhook');
 
-        // Salva a campanha localmente
-        $campaign = NotifyCampaignModel::create([
-            'notifiable_type' => 'system',
-            'notifiable_id' => '0',
-            'channel' => $this->channel,
-            'name' => $this->name,
-            'status' => 'pending',
-            'template' => $template,
-            'config_id' => $this->configId,
-            'webhook_url' => $webhookUrl,
-            'rate_per_minute' => $this->ratePerMinute,
-            'scheduled_at' => $this->scheduledAt,
-            'total_contacts' => count($contacts),
-        ]);
+        return $this->dispatch($this->buildPayload($contacts, $template, $webhookUrl));
+    }
 
-        // Salva os contatos em lotes de 500
-        $contactKey = $this->contactKey();
-        $rows = array_map(fn($c) => [
-            'id' => Str::uuid()->toString(),
-            'notify_campaign_id' => $campaign->id,
-            'contact' => $c[$contactKey] ?? null,
-            'name' => $c['name'] ?? null,
-            'extra_data' => isset($c['extra_data']) ? json_encode($c['extra_data']) : null,
-            'status' => 'pending',
-            'created_at' => now(),
-            'updated_at' => now(),
-        ], $contacts);
-
-        foreach (array_chunk($rows, 500) as $chunk) {
-            NotifyCampaignContact::insert($chunk);
-        }
-
-        // Log do disparo
-        $log = NotifyLog::create([
-            'notifiable_type' => 'system',
-            'notifiable_id' => '0',
-            'channel' => $this->channel,
-            'status' => 'sending',
-            'payload' => $this->buildPayload($contacts, $template, $webhookUrl),
-            'notify_campaign_id' => $campaign->id,
-        ]);
-
-        // Envia ao servidor
+    /**
+     * POST do payload para o endpoint de campanha do servidor.
+     */
+    protected function dispatch(array $payload): array
+    {
         try {
             $endpoint = $this->channel === 'sms' ? 'sms' : 'mail';
 
             $response = Http::withHeaders(['X-API-KEY' => config('notify.key')])
                 ->acceptJson()
-                ->post("https://notifykit.app.br/api/v1/campaigns/{$endpoint}",
-                    $this->buildPayload($contacts, $template, $webhookUrl)
-                );
+                ->post(Notify::BASE_URL . "/api/v1/send/campaigns/{$endpoint}", $payload);
 
             if ($response->failed()) {
                 throw new \Exception('Error creating campaign: ' . $response->body());
             }
 
-            $responseJson = $response->json();
-
-            // O servidor retorna 'status': true (boolean de aceite), não uma string de estado.
-            // O estado real da campanha vem via webhook depois.
-            $campaign->update([
-                'server_campaign_id' => $responseJson['campaign_id'] ?? null,
-                'status' => 'processing',
-                'total_contacts' => $responseJson['total_contacts'] ?? $campaign->total_contacts,
-            ]);
-
-            $log->markAsSent($responseJson['campaign_id'] ?? '', $responseJson);
-
+            return $response->json() ?? [];
         } catch (\Exception $e) {
-            $campaign->update(['status' => 'failed']);
-            $log->markAsFailed($e->getMessage());
             report($e);
-        }
 
-        return $campaign;
+            return [];
+        }
     }
 
     // ── Internos ──────────────────────────────────────────────────────────────

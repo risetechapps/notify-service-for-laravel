@@ -10,14 +10,11 @@ use RiseTechApps\Notify\Events\NotifyFailedEvent;
 use RiseTechApps\Notify\Events\NotifySendingEvent;
 use RiseTechApps\Notify\Events\NotifySentEvent;
 use RiseTechApps\Notify\Message\NotifySms;
-use RiseTechApps\Notify\Models\NotifyLog;
 
 class NotifyChannelSms extends NotifyChannel
 {
     public function send($notifiable, Notification $notification)
     {
-        $log = null;
-
         try {
             if (!$to = $notifiable->routeNotificationFor('sms', $notification)) {
                 return null;
@@ -30,23 +27,14 @@ class NotifyChannelSms extends NotifyChannel
             }
 
             $message->to($to);
-            $message->from(config('app.name'));
 
             Event::dispatch(new NotifySendingEvent($notifiable, $notification, 'sms'));
 
             $data = $message->toArray();
 
-            if ($data['webhook_url'] === null) {
+            if (($data['webhook_url'] ?? null) === null) {
                 $data['webhook_url'] = config('notify.webhook');
             }
-
-            $log = NotifyLog::create([
-                'notifiable_type' => $this->notifiableType($notifiable),
-                'notifiable_id'   => $this->notifiableId($notifiable),
-                'channel'         => 'sms',
-                'status'          => 'sending',
-                'payload'         => $data,
-            ]);
 
             $response = Http::withHeaders(['X-API-KEY' => $this->apiKey])
                 ->acceptJson()
@@ -58,8 +46,6 @@ class NotifyChannelSms extends NotifyChannel
 
             $responseJson = $response->json();
 
-            $log->markAsSent($responseJson['notification_id'] ?? '', $responseJson);
-
             Event::dispatch(new NotifySentEvent($notifiable, $notification, $responseJson, 'sms'));
 
             logglyInfo()->performedOn(self::class)
@@ -68,10 +54,6 @@ class NotifyChannelSms extends NotifyChannel
 
             return $responseJson;
         } catch (\Exception $exception) {
-            if ($log) {
-                $log->markAsFailed($exception->getMessage());
-            }
-
             Event::dispatch(new NotifyFailedEvent($notifiable, $notification, $exception, 'sms'));
 
             logglyError()

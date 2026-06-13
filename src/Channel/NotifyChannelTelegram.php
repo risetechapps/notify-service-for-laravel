@@ -10,14 +10,11 @@ use RiseTechApps\Notify\Events\NotifyFailedEvent;
 use RiseTechApps\Notify\Events\NotifySendingEvent;
 use RiseTechApps\Notify\Events\NotifySentEvent;
 use RiseTechApps\Notify\Message\NotifyTelegram;
-use RiseTechApps\Notify\Models\NotifyLog;
 
 class NotifyChannelTelegram extends NotifyChannel
 {
     public function send($notifiable, Notification $notification)
     {
-        $log = null;
-
         try {
             $message = $notification->toNotifyTelegram($notifiable);
 
@@ -29,17 +26,9 @@ class NotifyChannelTelegram extends NotifyChannel
 
             $data = $message->toArray();
 
-            if (!($data['webhook_url'] ?? null)) {
+            if (($data['webhook_url'] ?? null) === null) {
                 $data['webhook_url'] = config('notify.webhook');
             }
-
-            $log = NotifyLog::create([
-                'notifiable_type' => $this->notifiableType($notifiable),
-                'notifiable_id'   => $this->notifiableId($notifiable),
-                'channel'         => 'telegram',
-                'status'          => 'sending',
-                'payload'         => $data,
-            ]);
 
             $response = Http::withHeaders(['X-API-KEY' => $this->apiKey])
                 ->acceptJson()
@@ -51,8 +40,6 @@ class NotifyChannelTelegram extends NotifyChannel
 
             $responseJson = $response->json();
 
-            $log->markAsSent($responseJson['notification_id'] ?? '', $responseJson);
-
             Event::dispatch(new NotifySentEvent($notifiable, $notification, $responseJson, 'telegram'));
 
             logglyInfo()->performedOn(self::class)
@@ -61,10 +48,6 @@ class NotifyChannelTelegram extends NotifyChannel
 
             return $responseJson;
         } catch (\Exception $exception) {
-            if ($log) {
-                $log->markAsFailed($exception->getMessage());
-            }
-
             Event::dispatch(new NotifyFailedEvent($notifiable, $notification, $exception, 'telegram'));
 
             logglyError()

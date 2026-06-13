@@ -66,7 +66,7 @@ class NotifyConfiguration
 
     public function __construct()
     {
-        $this->apiUrl = 'https://notifykit.app.br';
+        $this->apiUrl = Notify::BASE_URL;
         $this->apiKey = config('notify.key', '');
     }
 

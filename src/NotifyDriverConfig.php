@@ -142,7 +142,7 @@ class NotifyDriverConfig
         $this->channel = $channel;
         $this->driver  = $driver;
         $this->label   = $label;
-        $this->apiUrl  = 'https://notifykit.app.br';
+        $this->apiUrl  = Notify::BASE_URL;
         $this->apiKey  = config('notify.key', '');
     }
 
@@ -615,6 +615,6 @@ class NotifyDriverConfig
     {
         return Http::withHeaders(['X-API-KEY' => config('notify.key', '')])
             ->acceptJson()
-            ->baseUrl('https://notifykit.app.br');
+            ->baseUrl(Notify::BASE_URL);
     }
 }

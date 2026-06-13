@@ -10,14 +10,11 @@ use RiseTechApps\Notify\Events\NotifyFailedEvent;
 use RiseTechApps\Notify\Events\NotifySendingEvent;
 use RiseTechApps\Notify\Events\NotifySentEvent;
 use RiseTechApps\Notify\Message\NotifySlack;
-use RiseTechApps\Notify\Models\NotifyLog;
 
 class NotifyChannelSlack extends NotifyChannel
 {
     public function send($notifiable, Notification $notification)
     {
-        $log = null;
-
         try {
             $message = $notification->toNotifySlack($notifiable);
 
@@ -25,25 +22,20 @@ class NotifyChannelSlack extends NotifyChannel
                 return null;
             }
 
-            if ($channel = $notifiable->routeNotificationFor('slack', $notification)) {
-                $message->channel($channel);
-            }
-
             Event::dispatch(new NotifySendingEvent($notifiable, $notification, 'slack'));
 
             $data = $message->toArray();
 
-            if (!($data['webhook_url'] ?? null)) {
-                $data['webhook_url'] = config('notify.webhook');
+            // Só usa o canal do Notifiable quando a mensagem não trouxe alvo
+            // (nem channel explícito nem Incoming Webhook).
+            if (empty($data['channel']) && empty($data['slack_webhook_url'])
+                && $channel = $notifiable->routeNotificationFor('slack', $notification)) {
+                $data['channel'] = $channel;
             }
 
-            $log = NotifyLog::create([
-                'notifiable_type' => $this->notifiableType($notifiable),
-                'notifiable_id'   => $this->notifiableId($notifiable),
-                'channel'         => 'slack',
-                'status'          => 'sending',
-                'payload'         => $data,
-            ]);
+            if (($data['webhook_url'] ?? null) === null) {
+                $data['webhook_url'] = config('notify.webhook');
+            }
 
             $response = Http::withHeaders(['X-API-KEY' => $this->apiKey])
                 ->acceptJson()
@@ -55,8 +47,6 @@ class NotifyChannelSlack extends NotifyChannel
 
             $responseJson = $response->json();
 
-            $log->markAsSent($responseJson['notification_id'] ?? '', $responseJson);
-
             Event::dispatch(new NotifySentEvent($notifiable, $notification, $responseJson, 'slack'));
 
             logglyInfo()->performedOn(self::class)
@@ -65,10 +55,6 @@ class NotifyChannelSlack extends NotifyChannel
 
             return $responseJson;
         } catch (\Exception $exception) {
-            if ($log) {
-                $log->markAsFailed($exception->getMessage());
-            }
-
             Event::dispatch(new NotifyFailedEvent($notifiable, $notification, $exception, 'slack'));
 
             logglyError()

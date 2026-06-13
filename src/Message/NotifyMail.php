@@ -4,67 +4,36 @@ namespace RiseTechApps\Notify\Message;
 
 class NotifyMail
 {
-    protected $notifiable;
-    public string $email = "";
-    public string $emailFrom = "";
-    protected string $subject;
-    protected array $content;
-    protected array $attach = [];
-    protected string $name = "";
-    protected string $nameFrom = "";
-    protected string $theme = 'default';
+    protected string $email = '';
+    protected string $name = '';
+    protected string $emailFrom = '';
+    protected string $nameFrom = '';
+    protected ?string $appName = null;
+
+    protected ?string $subject = null;
+    protected ?string $subjectMessage = null;
+    protected ?string $theme = null;
+
     protected ?string $line = null;
     protected array $lineHeader = [];
     protected array $lineFooter = [];
+
+    /** @var string|array<int, string>|null */
+    protected string|array|null $signature = null;
+
     protected array $action = [];
-    /**
-     * @var array<int, EmailTable>
-     */
+    protected array $attach = [];
+
+    /** @var array<int, EmailTable> */
     protected array $tables = [];
     protected array $lists = [];
-    protected ?string $subjectMessage = null;
-    protected $signature = null;
 
-    protected array $cc = [];
-    protected array $bcc = [];
-
+    protected array $tags = [];
+    protected ?string $configId = null;
     protected ?string $webhookUrl = null;
-
-    private function getEmail(): void
-    {
-        if (method_exists($this->notifiable, 'routeNotificationForEmail')) {
-            $this->email = $this->notifiable->routeNotificationForEmail();
-        }
-    }
-
-    private function getName(): void
-    {
-        if (method_exists($this->notifiable, 'routeNotificationForName')) {
-            $this->name = $this->notifiable->routeNotificationForName();
-        }
-    }
-
-    public function subject(string $subject): static
-    {
-        $this->subject = $subject;
-        return $this;
-    }
-
-    public function content(array $content): static
-    {
-        $this->content = $content;
-        return $this;
-    }
-
-    public function attachFromUrl(array|string $attach): static
-    {
-        $this->attach = array_merge($this->attach, (array) $attach);
-        return $this;
-    }
 
     public function to(string $email, string $name = ''): static
     {
-
         if (blank($this->email)) {
             $this->email = $email;
         }
@@ -89,9 +58,35 @@ class NotifyMail
         return $this;
     }
 
+    public function appName(string $appName): static
+    {
+        $this->appName = $appName;
+        return $this;
+    }
+
+    public function subject(string $subject): static
+    {
+        $this->subject = $subject;
+        return $this;
+    }
+
+    /** Assunto detalhado; tem prioridade sobre subject no servidor (máx 1000). */
+    public function subjectMessage(string $subjectMessage): static
+    {
+        $this->subjectMessage = $subjectMessage;
+        return $this;
+    }
+
     public function theme(string $theme): static
     {
         $this->theme = $theme;
+        return $this;
+    }
+
+    /** Parágrafo principal do corpo (máx 1000). */
+    public function line(string $line): static
+    {
+        $this->line = $line;
         return $this;
     }
 
@@ -107,17 +102,17 @@ class NotifyMail
         return $this;
     }
 
-    public function line(string $line): static
+    /** Botão CTA. A url é obrigatória quando a action está presente. */
+    public function action(string $url, string $text): static
     {
-        $this->line = $line;
+        $this->action = ['url' => $url, 'text' => $text];
         return $this;
     }
 
-    public function action(string $url, string $text): static
+    /** Anexos por URL. */
+    public function attachFromUrl(array|string $attach): static
     {
-        $this->action['url'] = $url;
-        $this->action['text'] = $text;
-
+        $this->attach = array_merge($this->attach, (array) $attach);
         return $this;
     }
 
@@ -163,32 +158,23 @@ class NotifyMail
         return $this;
     }
 
+    /** type: ordered | unordered */
     public function addList(string $type, array $items): static
     {
-        $this->lists[] = [
-            'type' => $type,
-            'items' => $items,
-        ];
-
+        $this->lists[] = ['type' => $type, 'items' => $items];
         return $this;
     }
 
     public function lists(array $lists): static
     {
         $this->lists = $lists;
-
         return $this;
     }
 
-    public function subjectMessage(string $subjectMessage): static
-    {
-        $this->subjectMessage = $subjectMessage;
-        return $this;
-    }
-
+    /** Assinatura — uma linha (acumula) ou o array completo. */
     public function setSignature(string $signature): static
     {
-        if (is_null($this->signature)) {
+        if (! is_array($this->signature)) {
             $this->signature = [];
         }
 
@@ -196,39 +182,63 @@ class NotifyMail
         return $this;
     }
 
-
-    public function toArray(): array
+    public function signature(string|array $signature): static
     {
-        return array_filter([
-            'email'           => $this->email,
-            'name'            => $this->name,
-            'email_from'      => blank($this->emailFrom) ? 'no-reply@risetech.com.br' : $this->emailFrom,
-            'name_from'       => blank($this->nameFrom) ? 'RiseTech' : $this->nameFrom,
-            'subject'         => $this->subject,
-            'theme'           => $this->theme,
-            'subject_message' => $this->subjectMessage ?? '',
-            'app_name'        => config('notify.from_name', config('app.name')),
+        $this->signature = $signature;
+        return $this;
+    }
 
-            // Novos campos de cópia
-            'cc'              => count($this->cc) > 0 ? $this->cc : null,
-            'bcc'             => count($this->bcc) > 0 ? $this->bcc : null,
+    /** Tag(s) para filtrar histórico — acumula e mescla com as tags do config. */
+    public function tag(string|array $tag): static
+    {
+        $this->tags = array_values(array_unique(array_merge($this->tags, (array) $tag)));
+        return $this;
+    }
 
-            'attach'          => count($this->attach) > 0 ? $this->attach : null,
-            'line'            => $this->line,
-            'line_header'     => count($this->lineHeader) > 0 ? $this->lineHeader : null,
-            'line_footer'     => count($this->lineFooter) > 0 ? $this->lineFooter : null,
-            'action'          => count($this->action) > 0 ? $this->action : null,
-            'tables'          => count($this->tables) > 0 ? array_map(fn($t) => $t->toArray(), $this->tables) : null,
-            'lists'           => count($this->lists) > 0 ? $this->lists : null,
-            'signature'       => $this->signature,
-            'webhook_url'     => $this->webhookUrl,
-        ], fn($value) => !is_null($value));
+    /** UUID ou label da credencial (multi-tenant). Sobrescreve a default do config. */
+    public function configId(string $configId): static
+    {
+        $this->configId = $configId;
+        return $this;
     }
 
     public function webhookUrl(string $webhookUrl): static
     {
         $this->webhookUrl = $webhookUrl;
         return $this;
+    }
+
+    public function toArray(): array
+    {
+        $tags = array_values(array_unique(array_merge(
+            (array) config('notify.mail.tags', []),
+            $this->tags,
+        )));
+
+        return array_filter([
+            'email'           => $this->email,
+            'name'            => $this->name,
+            'email_from'      => $this->emailFrom ?: config('notify.mail.from.address'),
+            'name_from'       => $this->nameFrom ?: config('notify.mail.from.name'),
+            'app_name'        => $this->appName ?: config('notify.mail.app_name') ?: config('app.name'),
+
+            'subject'         => $this->subject,
+            'subject_message' => $this->subjectMessage,
+            'theme'           => $this->theme ?: config('notify.mail.theme', 'default'),
+
+            'line'            => $this->line,
+            'line_header'     => $this->lineHeader ?: null,
+            'line_footer'     => $this->lineFooter ?: null,
+            'signature'       => $this->signature,
+            'action'          => $this->action ?: null,
+            'attach'          => $this->attach ?: null,
+            'tables'          => $this->tables ? array_map(fn ($t) => $t->toArray(), $this->tables) : null,
+            'lists'           => $this->lists ?: null,
+
+            'tag'             => $tags ?: null,
+            'config_id'       => $this->configId ?: config('notify.mail.config_id'),
+            'webhook_url'     => $this->webhookUrl,
+        ], fn ($value) => !is_null($value));
     }
 
     private function resolveTableFromArray(array $table): EmailTable
