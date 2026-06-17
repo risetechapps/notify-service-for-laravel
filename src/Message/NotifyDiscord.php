@@ -42,7 +42,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifyDiscord
 {
-    // ── Conteúdo ──────────────────────────────────────────────────────────────
+    // ── Destino / conteúdo ──────────────────────────────────────────────────────
+    protected ?string $channel = null;
     protected string $message = '';
     protected ?string $username = null;
     protected ?string $avatarUrl = null;
@@ -71,7 +72,19 @@ class NotifyDiscord
     protected ?string $configId = null;
     protected ?string $webhookUrl = null;
 
-    // ── Conteúdo ──────────────────────────────────────────────────────────────
+    // ── Destino / conteúdo ──────────────────────────────────────────────────────
+
+    /**
+     * Alias do canal (resolve para a webhook URL no servidor). Se não for um alias
+     * cadastrado, é ignorado e usa o webhook padrão/direto. Não confundir com
+     * ->discordWebhookUrl() (URL direta, que tem prioridade).
+     */
+    public function channel(string $channel): static
+    {
+        $this->channel = $channel;
+
+        return $this;
+    }
 
     /** Conteúdo da mensagem. Máx 2000 chars (obrigatório, salvo com embeds ou file_url). */
     public function message(string $message): static
@@ -285,7 +298,8 @@ class NotifyDiscord
         )));
 
         return array_filter([
-            // Conteúdo
+            // Destino / conteúdo
+            'channel'             => $this->channel,
             'message'             => $this->message ?: null,
             'username'            => $this->username,
             'avatar_url'          => $this->avatarUrl,

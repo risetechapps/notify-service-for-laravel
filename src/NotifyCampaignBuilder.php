@@ -15,10 +15,11 @@ use RiseTechApps\Notify\Message\EmailTable;
  * ──────────────────────────────────────────────────────────────────────────────
  *   NotifyCampaignBuilder::sms()
  *       ->name('Promo Junho')
- *       ->content('Olá {{name}}, sua oferta: https://loja.com')
+ *       ->content('Olá {name}, sua oferta: https://loja.com')   // SMS usa {chave} simples
+ *       ->tag(['promo', 'junho'])
  *       ->contacts([
  *           ['phone' => '5511999887766', 'name' => 'João'],
- *           ['phone' => '5521988776655', 'name' => 'Maria'],
+ *           ['phone' => '5521988776655', 'name' => 'Maria', 'extra_data' => ['cupom' => 'JUN10']],
  *       ])
  *       ->webhookUrl(route('notify.webhook.campaign'))
  *       ->send();
@@ -28,11 +29,12 @@ use RiseTechApps\Notify\Message\EmailTable;
  * ──────────────────────────────────────────────────────────────────────────────
  *   NotifyCampaignBuilder::sms()
  *       ->name('Promo Junho')
- *       ->content('Olá {{name}}, sua oferta chegou!')
+ *       ->content('Olá {name}, seu cupom é {cupom}!')
  *       ->fromQuery(
- *           User::where('active', true),  // Builder
- *           contactColumn: 'phone',       // coluna do telefone no banco
- *           nameColumn:    'name',        // coluna do nome (opcional)
+ *           User::where('active', true),       // Builder
+ *           contactColumn: 'phone',            // coluna do telefone no banco
+ *           nameColumn:    'name',             // coluna do nome (opcional)
+ *           extraColumns:  ['cupom' => 'coupon_code'], // viram extra_data (placeholders)
  *       )
  *       ->send();
  *
@@ -60,6 +62,7 @@ class NotifyCampaignBuilder
     protected int $ratePerMinute = 60;
     protected ?string $scheduledAt = null;
     protected ?array $credentials = null;
+    protected string|array|null $tag = null;
 
     // Contatos resolvidos (array final)
     protected array $contacts = [];
@@ -68,10 +71,10 @@ class NotifyCampaignBuilder
     protected ?Builder $querySource = null;
     protected string $queryContactColumn = 'email';
     protected ?string $queryNameColumn = null;
+    protected array $queryExtraColumns = [];
 
     // Template SMS
     protected string $smsContent = '';
-    protected string $smsFrom = '';
 
     // Template Email
     protected string $emailSubject = '';
@@ -149,6 +152,16 @@ class NotifyCampaignBuilder
         return $this;
     }
 
+    /**
+     * Tag(s) propagada(s) para cada notificação gerada pela campanha.
+     * Aceita string única ou array de strings.
+     */
+    public function tag(string|array $tag): static
+    {
+        $this->tag = $tag;
+        return $this;
+    }
+
     // ── Fontes de contatos ────────────────────────────────────────────────────
 
     /**
@@ -185,12 +198,16 @@ class NotifyCampaignBuilder
      * @param Builder $query Query já montada (sem ->get())
      * @param string $contactColumn Coluna com telefone (sms) ou email (email)
      * @param string|null $nameColumn Coluna com o nome (opcional)
+     * @param array $extraColumns Colunas extras viram `extra_data` (placeholders).
+     *              Lista (['cupom']) usa o mesmo nome; mapa (['cupom' => 'coupon_code'])
+     *              renomeia a chave do placeholder para o nome da coluna de origem.
      */
-    public function fromQuery(Builder $query, string $contactColumn, ?string $nameColumn = null): static
+    public function fromQuery(Builder $query, string $contactColumn, ?string $nameColumn = null, array $extraColumns = []): static
     {
         $this->querySource = $query;
         $this->queryContactColumn = $contactColumn;
         $this->queryNameColumn = $nameColumn;
+        $this->queryExtraColumns = $extraColumns;
         $this->contacts = [];
         return $this;
     }
@@ -201,16 +218,25 @@ class NotifyCampaignBuilder
      * @param Collection $collection
      * @param string $contactColumn Atributo com telefone (sms) ou email (email)
      * @param string|null $nameColumn Atributo com o nome (opcional)
+     * @param array $extraColumns Atributos extras viram `extra_data` (placeholders).
+     *              Lista (['cupom']) usa o mesmo nome; mapa (['cupom' => 'coupon_code'])
+     *              renomeia a chave do placeholder para o nome do atributo de origem.
      */
-    public function fromCollection(Collection $collection, string $contactColumn, ?string $nameColumn = null): static
+    public function fromCollection(Collection $collection, string $contactColumn, ?string $nameColumn = null, array $extraColumns = []): static
     {
         $key = $this->contactKey();
 
-        $this->contacts = $collection->map(function ($item) use ($contactColumn, $nameColumn, $key) {
+        $this->contacts = $collection->map(function ($item) use ($contactColumn, $nameColumn, $extraColumns, $key) {
             $row = [$key => data_get($item, $contactColumn)];
 
             if ($nameColumn) {
                 $row['name'] = data_get($item, $nameColumn);
+            }
+
+            $extra = $this->extractExtraData($item, $extraColumns);
+
+            if ($extra !== []) {
+                $row['extra_data'] = $extra;
             }
 
             return $row;
@@ -218,6 +244,27 @@ class NotifyCampaignBuilder
 
         $this->querySource = null;
         return $this;
+    }
+
+    /**
+     * Extrai colunas/atributos extras de um registro para o array `extra_data`.
+     * Chave numérica = usa o nome da coluna como chave do placeholder; chave string
+     * = renomeia o placeholder. Valores nulos são ignorados.
+     */
+    protected function extractExtraData(mixed $item, array $extraColumns): array
+    {
+        $extra = [];
+
+        foreach ($extraColumns as $placeholder => $column) {
+            $outKey = is_int($placeholder) ? $column : $placeholder;
+            $value = data_get($item, $column);
+
+            if (!is_null($value)) {
+                $extra[$outKey] = $value;
+            }
+        }
+
+        return $extra;
     }
 
     // ── Campos de SMS ─────────────────────────────────────────────────────────
@@ -230,8 +277,7 @@ class NotifyCampaignBuilder
 
     public function from(string $from, string $nameFrom = ''): static
     {
-        // SMS usa só o primeiro argumento; email usa os dois
-        $this->smsFrom = $from;
+        // Só email usa remetente; o servidor não aceita mais `from` em SMS.
         $this->emailFrom = $from;
         $this->emailNameFrom = $nameFrom;
         return $this;
@@ -376,6 +422,12 @@ class NotifyCampaignBuilder
                         $contact['name'] = data_get($row, $this->queryNameColumn);
                     }
 
+                    $extra = $this->extractExtraData($row, $this->queryExtraColumns);
+
+                    if ($extra !== []) {
+                        $contact['extra_data'] = $extra;
+                    }
+
                     $contacts[] = $contact;
                 }
             });
@@ -391,18 +443,17 @@ class NotifyCampaignBuilder
         if ($this->channel === 'sms') {
             return array_filter([
                 'content' => $this->smsContent,
-                'from' => $this->smsFrom ?: config('app.name'),
             ], fn($v) => $v !== '' && !is_null($v));
         }
 
         // Email
         return array_filter([
-            'email_from' => $this->emailFrom ?: 'no-reply@risetech.com.br',
-            'name_from' => $this->emailNameFrom ?: 'RiseTech',
+            'email_from' => $this->emailFrom ?: config('notify.mail.from.address'),
+            'name_from' => $this->emailNameFrom ?: config('notify.mail.from.name'),
             'subject' => $this->emailSubject,
             'subject_message' => $this->emailSubjectMessage,
             'theme' => $this->emailTheme,
-            'app_name' => config('notify.from_name', config('app.name')),
+            'app_name' => config('notify.mail.app_name', config('app.name')),
             'line' => $this->emailLine,
             'line_header' => $this->emailLineHeader ?: null,
             'line_footer' => $this->emailLineFooter ?: null,
@@ -417,11 +468,11 @@ class NotifyCampaignBuilder
     {
         // Email
         return array_filter([
-            'email_from' => $this->emailFrom ?: 'no-reply@risetech.com.br',
-            'name_from' => $this->emailNameFrom ?: 'RiseTech',
+            'email_from' => $this->emailFrom ?: config('notify.mail.from.address'),
+            'name_from' => $this->emailNameFrom ?: config('notify.mail.from.name'),
             'subject' => $this->emailSubject,
             'subject_message' => $this->emailSubjectMessage,
-            'app_name' => config('notify.from_name', config('app.name')),
+            'app_name' => config('notify.mail.app_name', config('app.name')),
             'html_raw' => file_get_contents($html),
         ], fn($v) => !is_null($v));
     }
@@ -437,6 +488,7 @@ class NotifyCampaignBuilder
             'webhook_url' => $webhookUrl,
             'rate_per_minute' => $this->ratePerMinute !== 60 ? $this->ratePerMinute : null,
             'scheduled_at' => $this->scheduledAt,
+            'tag' => $this->tag,
         ], fn($v) => !is_null($v));
     }
 }

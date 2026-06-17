@@ -2,6 +2,16 @@
 
 namespace RiseTechApps\Notify\Message;
 
+/**
+ * Notificação via webhook HTTP genérico, enviada ao servidor via /api/v1/send/webhook.
+ *
+ * O servidor faz a requisição ao `url` (ou ao default_url da config) e devolve o status
+ * pelo callback (->webhookUrl()). Não confundir o `url` (destino da requisição) com o
+ * `webhook_url` (seu callback de status).
+ *
+ * Obs.: o canal webhook não tem bloco de defaults em config/notify.php (a chave
+ * `notify.webhook` já é o callback global de status) — `tag`/`config_id` vão por mensagem.
+ */
 class NotifyWebhook
 {
     protected string $url = '';
@@ -13,6 +23,7 @@ class NotifyWebhook
     protected ?string $authUser = null;
     protected ?string $authPassword = null;
     protected int $timeout = 10;
+    protected array $tags = [];
     protected ?string $configId = null;
     protected ?string $webhookUrl = null;
 
@@ -90,6 +101,17 @@ class NotifyWebhook
         return $this;
     }
 
+    /**
+     * Adiciona tag(s) para agrupar/filtrar no histórico. Aceita string ou array;
+     * acumula entre chamadas.
+     */
+    public function tag(string|array $tag): static
+    {
+        $this->tags = array_values(array_unique(array_merge($this->tags, (array) $tag)));
+
+        return $this;
+    }
+
     public function configId(string $configId): static
     {
         $this->configId = $configId;
@@ -107,7 +129,7 @@ class NotifyWebhook
     public function toArray(): array
     {
         return array_filter([
-            'url'           => $this->url,
+            'url'           => $this->url ?: null,
             'method'        => $this->method !== 'POST' ? $this->method : null,
             'payload'       => count($this->payload) > 0 ? $this->payload : null,
             'headers'       => count($this->headers) > 0 ? $this->headers : null,
@@ -116,6 +138,7 @@ class NotifyWebhook
             'auth_user'     => $this->authUser,
             'auth_password' => $this->authPassword,
             'timeout'       => $this->timeout !== 10 ? $this->timeout : null,
+            'tag'           => $this->tags ?: null,
             'config_id'     => $this->configId,
             'webhook_url'   => $this->webhookUrl,
         ], fn ($value) => !is_null($value));

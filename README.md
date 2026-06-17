@@ -4,7 +4,7 @@
 [![PHP](https://img.shields.io/badge/PHP-8.3%2B-blue?logo=php)](https://php.net)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE.md)
 
-Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **10 canais de notificação**, **campanhas em massa**, **rastreamento automático** por banco de dados e **consultas de status** tanto locais quanto via API do servidor.
+Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **10 canais de notificação**, **campanhas em massa** e **consultas de status** via API do servidor. É um cliente puro — **não persiste nada localmente**; todo o estado vive no servidor.
 
 ---
 
@@ -28,12 +28,9 @@ Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **
   - [Campanha SMS](#campanha-sms)
   - [Campanha Email](#campanha-email)
   - [Fontes de contatos](#fontes-de-contatos)
-- [Rastreamento automático](#rastreamento-automático)
+- [Estado e rastreamento](#estado-e-rastreamento)
 - [Webhook receiver](#webhook-receiver)
 - [Consultas de status](#consultas-de-status)
-  - [Consultas locais](#consultas-locais)
-  - [Consultas no servidor](#consultas-no-servidor)
-- [Modelos](#modelos)
 - [Eventos Laravel](#eventos-laravel)
 
 ---
@@ -44,13 +41,16 @@ Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **
 composer require risetechapps/notify-service-for-laravel
 ```
 
-Publique a config e rode as migrations:
+Publique a config:
 
 ```bash
 php artisan vendor:publish --provider="RiseTechApps\Notify\NotifyServiceProvider" --tag="config"
-php artisan migrate
 composer dump-autoload
 ```
+
+> O pacote **não persiste nada localmente** — não há migrations nem tabelas. Todo o
+> histórico/estado fica no servidor; consulte via `NotifyQuery::server()` e reaja
+> aos callbacks pelos eventos de webhook (veja [Webhook receiver](#webhook-receiver)).
 
 ---
 
@@ -104,7 +104,7 @@ Route::post('/notify/webhook/campaign', [NotifyWebhookController::class, 'campai
 
 | Canal | Drivers suportados | Método `via()` |
 |---|---|---|
-| SMS | Twilio, Zenvia, Mobizon | `notify.sms` |
+| SMS | Mobizon, ClickSend, Twilio | `notify.sms` |
 | Email | SMTP, Mailgun, Resend, SendGrid, SES, Postmark | `notify.mail` |
 | Push Android | FCM | `notify.push` |
 | Push iOS | APNS | `notify.apns` |
@@ -121,7 +121,8 @@ Route::post('/notify/webhook/campaign', [NotifyWebhookController::class, 'campai
 
 Todas as notificações usam o sistema de notificações nativo do Laravel. Crie uma classe de notificação, declare o canal em `via()` e implemente o método correspondente.
 
-O rastreamento é **automático** — um `NotifyLog` é criado no banco para cada envio sem nenhuma configuração adicional.
+O envio faz um POST ao servidor; **nada é persistido localmente**. Acompanhe o status
+pelos [eventos](#eventos-laravel) e consulte o histórico via `NotifyQuery::server()`.
 
 ---
 
@@ -142,6 +143,8 @@ class PedidoConfirmado extends Notification
         return (new NotifySms)
             ->to($notifiable->phone)
             ->content('Seu pedido #1234 foi confirmado!')
+            ->tag(['pedido', 'transacional'])             // opcional, agrupa/filtra
+            ->configId('Twilio Principal')                // opcional, UUID ou label
             ->webhookUrl('https://sua-app.com/notify/webhook'); // opcional
     }
 }
@@ -149,10 +152,49 @@ class PedidoConfirmado extends Notification
 
 | Método | Descrição |
 |---|---|
-| `->to(string)` | Número destino no formato E.164 sem `+`, ex: `5521981425950` |
-| `->content(string)` | Texto do SMS. Máx: 160 chars |
-| `->from(string)` | Remetente / sender ID |
+| `->to(string)` | Número destino, ex: `+5521981425950` (máx: 32 chars) |
+| `->content(string)` | Texto do SMS. Máx: 160 chars (sanitizado GSM-7 no servidor) |
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar. Acumula entre chamadas e é mesclada com as tags default do config |
+| `->configId(string)` | Provedor/credencial específico (UUID ou label). Sobrescreve `notify.sms.config_id` |
 | `->webhookUrl(string)` | URL de callback de status (sobrescreve o global do config) |
+
+> O remetente **não** é mais definido aqui — o servidor usa a credencial do provedor
+> (config default ou a indicada por `config_id`).
+
+**Defaults no `config/notify.php`:**
+
+```php
+'sms' => [
+    'config_id' => env('NOTIFY_SMS_CONFIG_ID'), // usado quando a notificação não passa ->configId()
+    'tags'      => ['minha-app'],               // aplicadas a todo SMS, mescladas com as da notificação
+],
+```
+
+Precedência: `->configId()` da notificação **sobrescreve** o `config_id` do config; as tags
+da notificação são **somadas** às tags default do config (sem duplicar).
+
+**Envio on-demand** (sem model, direto para um número):
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+Notification::route('sms', '+5511999998888')->notify(new PedidoConfirmado());
+```
+
+**Ciclo de vida completo do SMS:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` ou `Notification::route('sms', $numero)->notify(...)` |
+| Acompanhar status | eventos `NotifySentEvent` (envio) e `NotifyWebhookEvent` (callbacks) — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->sms()->tag('promo')->status('delivered')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->sms('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->sms('uuid')->cancel()` |
+
+Detalhes desses métodos em [Consultas de status → SMS](#sms-endpoints-dedicados).
+
+> **Agendamento:** o envio individual de SMS **não** suporta agendamento — para SMS
+> agendado, use uma [campanha SMS](#campanha-sms) com `->scheduledAt(...)`.
 
 ---
 
@@ -171,32 +213,132 @@ class BemVindo extends Notification
     public function toNotifyMail($notifiable): NotifyMail
     {
         return (new NotifyMail)
-            ->to($notifiable->email, $notifiable->name)
-            ->from('noreply@app.com', 'Minha App')
+            ->to($notifiable->email, $notifiable->name)   // nome é obrigatório no servidor
+            ->from('noreply@app.com', 'Minha App')        // ou defina os defaults no config
             ->subject('Bem-vindo!')
             ->line('Obrigado por se cadastrar.')
             ->action('https://app.com/dashboard', 'Acessar painel')
-            ->setSignature('Equipe Minha App');
+            ->setSignature('Equipe Minha App')
+            ->tag(['onboarding', 'transacional'])         // opcional, agrupa/filtra
+            ->configId('Resend Transacional');            // opcional, UUID ou label
     }
 }
 ```
 
+#### Destinatário e remetente (campos obrigatórios)
+
+O servidor exige `email`, `name`, `email_from`, `name_from` e `app_name`. Resolva assim:
+
+| Campo | Como preencher |
+|---|---|
+| `email` / `name` (destinatário) | `->to($email, $name)` **ou** faça `routeNotificationForMail()` devolver `[$email => $name]` |
+| `email_from` / `name_from` (remetente) | `->from($email, $name)` **ou** os defaults `notify.mail.from.*` no config/`.env` |
+| `app_name` | `->appName(...)` **ou** `notify.mail.app_name`; cai para `config('app.name')` |
+
+> ⚠️ Se nenhum desses for definido, o servidor responde `422` com
+> `email_from / name / name_from is required`. O `name` do destinatário **não** é
+> deduzido automaticamente — defina-o via `->to()` ou no `routeNotificationForMail()`.
+
+No seu `Notifiable`, para enviar o nome do destinatário junto:
+
+```php
+public function routeNotificationForMail(): array
+{
+    return [$this->email => $this->name];
+}
+```
+
+#### Métodos
+
+**Cabeçalho / remetente:**
+
 | Método | Descrição |
 |---|---|
-| `->to(email, name?)` | Destinatário |
-| `->from(email, name?)` | Remetente |
-| `->subject(string)` | Assunto do email |
-| `->subjectMessage(string)` | Subtítulo / preview no cliente de email |
-| `->line(string)` | Linha de texto principal |
-| `->lineHeader(string)` | Linha no cabeçalho (chamadas múltiplas = múltiplas linhas) |
-| `->lineFooter(string)` | Linha no rodapé |
-| `->action(url, text)` | Botão de call-to-action |
-| `->theme(string)` | Tema do template. Default: `default` |
-| `->setSignature(string)` | Assinatura no final |
-| `->attachFromUrl(string\|array)` | Anexar arquivo(s) por URL |
-| `->addTable(EmailTable\|array)` | Tabela: `['headers' => [], 'rows' => [[]]]` |
-| `->addList(type, items)` | Lista: tipo `ordered` ou `unordered` |
-| `->webhookUrl(string)` | URL de callback |
+| `->to(email, name?)` | Destinatário (*write-once*) |
+| `->from(email, name?)` | Remetente (*write-once*; default em `notify.mail.from.*`) |
+| `->appName(string)` | Nome do app/marca no template (default `notify.mail.app_name` → `config('app.name')`) |
+| `->subject(string)` | Assunto (máx 255) |
+| `->subjectMessage(string)` | Assunto detalhado; **tem prioridade sobre `subject`** no servidor (máx 1000) |
+| `->theme(string)` | Tema do template. Default: `notify.mail.theme` (`default`) |
+
+**Corpo:**
+
+| Método | Descrição |
+|---|---|
+| `->line(string)` | Parágrafo principal (máx 1000) |
+| `->lineHeader(string)` | Linha antes do corpo (acumula entre chamadas) |
+| `->lineFooter(string)` | Linha após o corpo (acumula entre chamadas) |
+| `->action(url, text)` | Botão CTA (a `url` é obrigatória quando há action) |
+| `->addTable(EmailTable\|array)` | Adiciona uma tabela: `['headers' => [], 'rows' => [[]]]` |
+| `->tables(array)` | **Substitui** todas as tabelas de uma vez (reseta as anteriores) |
+| `->table(callable)` | Adiciona uma tabela via callback `EmailTable` fluente |
+| `->addList(type, items)` | Adiciona uma lista: tipo `ordered` ou `unordered` |
+| `->lists(array)` | Substitui todas as listas de uma vez |
+| `->setSignature(string)` | Assinatura — acumula linha a linha |
+| `->signature(string\|array)` | Define a assinatura inteira de uma vez |
+| `->attachFromUrl(string\|array)` | Anexa arquivo(s) por URL (acumula) |
+
+**Roteamento / rastreio:**
+
+| Método | Descrição |
+|---|---|
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar. Acumula e mescla com `notify.mail.tags` |
+| `->configId(string)` | Credencial específica (UUID ou label). Sobrescreve `notify.mail.config_id` |
+| `->webhookUrl(string)` | URL de callback de status (sobrescreve o global do config) |
+
+> ⚠️ `addTable()` seguido de `tables()` descarta a tabela do `addTable` — o `tables()`
+> **reseta** a lista. Para múltiplas tabelas use `addTable()` repetido **ou** só `tables([...])`.
+
+#### Defaults no `config/notify.php`
+
+```php
+'mail' => [
+    'from' => [
+        'address' => env('NOTIFY_MAIL_FROM_ADDRESS'),   // remetente default
+        'name'    => env('NOTIFY_MAIL_FROM_NAME'),
+    ],
+    'app_name'  => env('NOTIFY_MAIL_APP_NAME'),          // cai para config('app.name')
+    'theme'     => env('NOTIFY_MAIL_THEME', 'default'),
+    'config_id' => env('NOTIFY_MAIL_CONFIG_ID'),         // usado quando não passa ->configId()
+    'tags'      => [],                                   // mescladas com as da notificação
+],
+```
+
+```dotenv
+NOTIFY_MAIL_FROM_ADDRESS=no-reply@suaempresa.com
+NOTIFY_MAIL_FROM_NAME="Sua Empresa"
+NOTIFY_MAIL_APP_NAME=NotifyApp
+NOTIFY_MAIL_CONFIG_ID=smtp-principal
+```
+
+Com os defaults configurados, o mínimo vira só `->to()` + `->subject()` + `->line()`.
+
+> Se você **publicou** o `config/notify.php` antes da versão com o bloco `mail`, republique
+> com `--force` (ou adicione o bloco manualmente), senão os defaults de e-mail não existem.
+
+Precedência: `->configId()`/`->appName()`/`->from()` da notificação **sobrescrevem** os defaults;
+as tags da notificação são **somadas** às `notify.mail.tags` (sem duplicar).
+
+#### Envio on-demand (sem model)
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+Notification::route('mail', ['cliente@exemplo.com' => 'Maria Silva'])
+    ->notify(new BemVindo());
+```
+
+#### Ciclo de vida completo do e-mail
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` ou `Notification::route('mail', [...])->notify(...)` |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->mail()->tag('pedido')->status('delivered')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->mail('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->mail('uuid')->cancel()` |
+
+Detalhes desses métodos em [Consultas de status → Email](#email-endpoints-dedicados).
 
 ---
 
@@ -209,27 +351,162 @@ public function toNotifyPush($notifiable): NotifyPush
 {
     return (new NotifyPush)
         ->token($notifiable->fcm_token)   // string ou array de tokens
-        ->title('Nova mensagem')
-        ->body('Você tem uma nova mensagem de João.')
-        ->imageUrl('https://app.com/image.png')
-        ->data(['order_id' => '1234']);    // valores devem ser strings (regra FCM)
+        ->title('Pedido a caminho 🚚')
+        ->body('Seu pedido #123 saiu para entrega.')
+        ->image('https://app.com/banner.png')
+        ->channelId('pedidos')
+        ->priority('high')
+        ->ttl(600)
+        ->link('https://app.com/pedidos/123')
+        ->data(['route' => '/pedidos/123']);   // valores devem ser strings (regra FCM)
 }
 ```
 
+**Alvo** (use um dos três):
+
 | Método | Descrição |
 |---|---|
-| `->token(string\|array)` | Device token(s) FCM |
-| `->topic(string)` | Tópico FCM (alternativa ao token) |
+| `->token(string\|array)` | Device token(s) FCM. *Write-once*: o primeiro valor não-vazio prevalece |
+| `->topic(string)` | Tópico FCM — todos os inscritos |
+| `->condition(string)` | Combina tópicos, ex: `"'a' in topics && 'b' in topics"` |
+
+**Conteúdo:**
+
+| Método | Descrição |
+|---|---|
 | `->title(string)` | Título da notificação |
 | `->body(string)` | Corpo da notificação |
-| `->imageUrl(string)` | URL de imagem |
+| `->image(string)` | URL da imagem grande (`->imageUrl()` é alias) |
+| `->icon(string)` | URL do ícone pequeno |
 | `->data(array)` | Dados extras (todos os valores como string) |
-| `->configId(string)` | UUID da config FCM salva no servidor |
-| `->webhookUrl(string)` | URL de callback |
+
+> `title`/`body` são obrigatórios — **exceto** quando `silent(true)` (push data-only).
+
+**Comportamento:**
+
+| Método | Descrição |
+|---|---|
+| `->sound(string\|array)` | Nome do arquivo de som; ou objeto de som crítico iOS `['name' => 'alarm.caf', 'volume' => 1.0]` (atalho: `->criticalSound()`) |
+| `->criticalSound(name, volume?)` | Som crítico no iOS (toca no modo silencioso). Gera `['name' => ..., 'volume' => ...]`; combine com `->interruptionLevel('critical')` |
+| `->channelId(string)` | Android notification channel id (necessário p/ som/vibração no Android 8+) |
+| `->badge(int)` | Número no badge (0 limpa) |
+| `->priority(string)` | Entrega: `high` \| `normal` |
+| `->ttl(int\|string)` | Time-to-live em segundos (`600`) ou string (`"3600s"`) |
+| `->collapseKey(string)` | Agrupa/substitui notificações pela mesma chave |
+| `->silent(bool?)` | Push data-only / background sync (sem alerta visível) |
+
+**iOS / ações:**
+
+| Método | Descrição |
+|---|---|
+| `->clickAction(string)` | Android intent action ao tocar |
+| `->category(string)` | Categoria de action buttons no iOS |
+| `->interruptionLevel(string)` | `passive` \| `active` \| `time-sensitive` \| `critical` |
+
+**Heads-up / agrupamento / interação:**
+
+| Método | Descrição |
+|---|---|
+| `->tag(string)` | Agrupa/substitui no device (Android+web) e etiqueta o histórico. **String única** (no push não é array); sobrescreve `notify.push.tag` |
+| `->notificationPriority(string)` | Heads-up Android: `PRIORITY_HIGH` \| `PRIORITY_MAX` ... |
+| `->requireInteraction(bool?)` | Fixa a notificação até o usuário interagir (web) |
+| `->action(title, id, icon?)` | Adiciona um botão (máx 3). Acumula entre chamadas |
+| `->actions(array)` | Define todos os botões de uma vez |
+| `->line(string)` | Adiciona um item de lista InboxStyle (máx 10, via data). Acumula |
+| `->lines(array)` | Define todos os itens de lista de uma vez |
+
+**Extras:**
+
+| Método | Descrição |
+|---|---|
+| `->link(string)` | Deep link / URL aberta ao tocar (web push) |
+| `->analyticsLabel(string)` | Rótulo de analytics no Firebase |
+| `->android(array)` | Override bruto do bloco `android` do FCM |
+| `->apns(array)` | Override bruto do bloco `apns` do FCM |
+| `->webpush(array)` | Override bruto do bloco `webpush` do FCM |
+| `->configId(string)` | Credencial FCM (UUID ou label). Sobrescreve `notify.push.config_id` |
+| `->webhookUrl(string)` | URL de callback de status (default: `notify.webhook` global) |
+
+> ⚠️ No push, **`tag` é string única** (é a FCM grouping tag, regra de validação do
+> servidor) — diferente de SMS/e-mail, aqui **não** aceita array.
+
+**Defaults no `config/notify.php`:**
+
+```php
+'push' => [
+    'config_id' => env('NOTIFY_PUSH_CONFIG_ID'), // usado quando não passa ->configId()
+    'tag'       => env('NOTIFY_PUSH_TAG'),        // string única; sobrescrita por ->tag()
+],
+```
+
+Exemplos avançados:
+
+```php
+// Som crítico no iOS (exige permissão de "critical alerts" no app)
+(new NotifyPush)
+    ->token($fcm)
+    ->title('ALERTA')
+    ->body('Temperatura acima do limite!')
+    ->criticalSound('alarm.caf', 1.0)
+    ->interruptionLevel('critical')
+    ->priority('high');
+
+// Tópico + imagem + heads-up + badge + tag de agrupamento
+(new NotifyPush)
+    ->topic('promocoes')
+    ->title('Black Friday começou!')
+    ->body('Até 70% OFF só hoje.')
+    ->image('https://cdn.empresa.com/promo.jpg')
+    ->channelId('ofertas')
+    ->notificationPriority('PRIORITY_MAX')
+    ->badge(1)
+    ->tag('blackfriday');
+
+// Botões + lista (InboxStyle) + deep link
+(new NotifyPush)
+    ->token($fcm)
+    ->title('3 novas mensagens')
+    ->body('Toque para ver')
+    ->line('Ana: bom dia!')
+    ->line('João: reunião 14h')
+    ->line('Maria: enviei o arquivo')
+    ->action('Responder', 'reply')
+    ->action('Marcar como lida', 'mark_read')
+    ->clickAction('OPEN_CHAT')
+    ->data(['screen' => 'chat', 'chat_id' => '987']);
+
+// Push silencioso / data-only
+(new NotifyPush)->token($fcm)->silent()->data(['sync' => 'contacts', 'version' => '42']);
+
+// Override bruto por plataforma
+(new NotifyPush)
+    ->token($fcm)->title('Custom')->body('Avançado')
+    ->android(['notification' => ['color' => '#E53935', 'notification_priority' => 'PRIORITY_MAX']])
+    ->apns(['payload' => ['aps' => ['thread-id' => 'grupo-pedidos']]]);
+```
+
+**Ciclo de vida completo do push:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` (token via `routeNotificationFor('push')` ou `->token()`) |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->push()->tag('promo')->status('sent')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->push('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->push('uuid')->cancel()` |
+
+Detalhes em [Consultas de status → Push](#push-endpoints-dedicados).
+
+> **Tokens inválidos:** quando você envia para um array de tokens, o servidor reporta os
+> mortos no webhook pelo evento `token_invalid` (campo `tokens: [...]` no payload do
+> `NotifyWebhookEvent`) — use para limpar seu store.
 
 ---
 
 ### APNS Apple Push
+
+Push direto para iOS via APNs. Aceita token único ou lista de tokens; o servidor enfileira
+(resposta `202` com `notification_id`) e devolve o status pelo webhook.
 
 ```php
 use RiseTechApps\Notify\Message\NotifyApns;
@@ -237,199 +514,1095 @@ use RiseTechApps\Notify\Message\NotifyApns;
 public function toNotifyApns($notifiable): NotifyApns
 {
     return (new NotifyApns)
-        ->token($notifiable->apns_token)
+        ->token($notifiable->apns_token)   // string ou array de tokens
         ->title('Novo pedido')
+        ->subtitle('Pedido #1234')
         ->body('Seu pedido foi enviado.')
         ->badge(1)
         ->sound('default')
+        ->category('ORDER')
+        ->threadId('pedidos')
+        ->tag(['entregas', 'transacional'])  // opcional, agrupa/filtra
+        ->configId('APNS Produção')          // opcional, UUID ou label
         ->data(['order_id' => '1234']);
 }
 ```
 
 | Método | Descrição |
 |---|---|
-| `->token(string\|array)` | Device token(s) Apple |
+| `->token(string\|array)` | Device token(s) Apple. *Write-once*: o primeiro valor não-vazio prevalece |
 | `->title(string)` | Título |
 | `->body(string)` | Corpo |
 | `->subtitle(string)` | Subtítulo |
-| `->badge(int)` | Número no ícone do app |
-| `->sound(string)` | Nome do arquivo de som |
-| `->data(array)` | Payload customizado |
+| `->badge(int)` | Número no badge do ícone (0 limpa) |
+| `->sound(string)` | Nome do arquivo de som (ex.: `default`) |
+| `->data(array)` | Payload customizado entregue ao app |
 | `->category(string)` | Categoria para action buttons iOS |
-| `->threadId(string)` | Agrupa notificações relacionadas |
-| `->configId(string)` | UUID da config APNS |
-| `->webhookUrl(string)` | URL de callback |
+| `->threadId(string)` | Agrupa notificações relacionadas no device |
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar. Acumula e mescla com `notify.apns.tags` |
+| `->configId(string)` | Credencial APNS (UUID ou label). Sobrescreve `notify.apns.config_id` |
+| `->webhookUrl(string)` | URL de callback de status (default: `notify.webhook` global) |
+
+**Defaults no `config/notify.php`:**
+
+```php
+'apns' => [
+    'config_id' => env('NOTIFY_APNS_CONFIG_ID'), // usado quando não passa ->configId()
+    'tags'      => [],                            // mescladas com as da notificação
+],
+```
+
+Precedência: `->configId()` da notificação **sobrescreve** o `config_id` do config; as tags
+da notificação são **somadas** às `notify.apns.tags` (sem duplicar).
+
+**Envio on-demand** (sem model, direto para um token):
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+Notification::route('apns', $apnsToken)->notify(new PedidoEnviado());
+```
+
+**Ciclo de vida completo do APNs:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` (token via `routeNotificationFor('apns')` ou `->token()`) |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->apns()->tag('entregas')->status('sent')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->apns('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->apns('uuid')->cancel()` |
+
+Detalhes em [Consultas de status → APNS](#apns-endpoints-dedicados).
 
 ---
 
 ### Telegram
 
+Envia texto, foto, localização, contato, enquete e botões inline. O servidor enfileira
+(resposta `202` com `notification_id`) e devolve o status pelo webhook. Cada envio carrega
+**um** tipo de conteúdo.
+
 ```php
 use RiseTechApps\Notify\Message\NotifyTelegram;
 
-public function toNotifyTelegram($notifiable): NotifyTelegram
+class DeployConcluido extends Notification
 {
-    return (new NotifyTelegram)
-        ->chatId($notifiable->telegram_chat_id)
-        ->message('🚀 Seu deploy foi concluído com sucesso!')
-        ->parseMode('Markdown')
-        ->button('Ver logs', 'https://app.com/logs');
+    public function via($notifiable): array
+    {
+        return ['notify.telegram'];
+    }
+
+    public function toNotifyTelegram($notifiable): NotifyTelegram
+    {
+        return (new NotifyTelegram)
+            ->chatId($notifiable->telegram_chat_id)
+            ->message('🚀 Seu deploy foi concluído com sucesso!')
+            ->parseMode('Markdown')
+            ->disablePreview()
+            ->button('Ver logs', 'https://app.com/logs');
+    }
 }
 ```
 
+O `chat_id` também pode vir do `routeNotificationForTelegram()` no seu Notifiable:
+
+```php
+public function routeNotificationForTelegram(): string
+{
+    return $this->telegram_chat_id;
+}
+```
+
+**Conteúdo** (use um por envio):
+
 | Método | Descrição |
 |---|---|
-| `->chatId(string)` | ID numérico ou @username |
 | `->message(string)` | Texto da mensagem. Máx: 4096 chars |
-| `->parseMode(string)` | `Markdown` \| `MarkdownV2` \| `HTML` |
-| `->imageUrl(string)` | URL de imagem |
-| `->button(text, url)` | Botão inline |
-| `->buttons(array)` | Múltiplos botões: `[[['text' => '', 'url' => '']]]` |
-| `->configId(string)` | UUID da config Telegram |
-| `->webhookUrl(string)` | URL de callback |
+| `->imageUrl(string)` | Envia uma foto a partir de uma URL (o `message` vira legenda) |
+| `->location(lat, lng)` | Envia uma localização (pino no mapa) |
+| `->contact(phone, firstName, lastName?)` | Envia um cartão de contato |
+| `->poll(question, options[], isAnonymous?)` | Envia uma enquete (`isAnonymous` default `true`) |
+
+**Alvo / formatação:**
+
+| Método | Descrição |
+|---|---|
+| `->chatId(string)` | ID numérico, @username **ou alias de canal** (ex.: `equipe`) (obrigatório). *Write-once* |
+| `->parseMode(string)` | `Markdown` \| `MarkdownV2` \| `HTML`. Default: `Markdown` |
+| `->button(text, url)` | Botão inline (cada chamada = uma linha) |
+| `->buttons(array)` | Grade completa: `[[['text' => '', 'url' => '']]]` (substitui) |
+
+**Opções comuns** (combinam com qualquer conteúdo):
+
+| Método | Descrição |
+|---|---|
+| `->silent(bool?)` | Envio silencioso (`disable_notification`) |
+| `->protectContent(bool?)` | Impede encaminhamento/cópia |
+| `->replyTo(int)` | Responde a uma mensagem (message_id do Telegram) |
+| `->threadId(int)` | Envia para um tópico de grupo/fórum |
+| `->disablePreview(bool?)` | Desabilita preview de links |
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar. Acumula e mescla com `notify.telegram.tags` |
+| `->configId(string)` | Bot/credencial (UUID ou label). Sobrescreve `notify.telegram.config_id` |
+| `->webhookUrl(string)` | URL de callback de status (default: `notify.webhook` global) |
+
+**Defaults no `config/notify.php`:**
+
+```php
+'telegram' => [
+    'config_id' => env('NOTIFY_TELEGRAM_CONFIG_ID'), // usado quando não passa ->configId()
+    'tags'      => [],                                // mescladas com as da notificação
+],
+```
+
+Precedência: `->configId()` da notificação **sobrescreve** o `config_id` do config; as tags
+da notificação são **somadas** às `notify.telegram.tags` (sem duplicar).
+
+#### Exemplos por tipo de conteúdo
+
+```php
+use RiseTechApps\Notify\Message\NotifyTelegram;
+
+// Texto simples
+(new NotifyTelegram)->chatId($chatId)->message('Olá! 👋');
+
+// Texto com formatação HTML
+(new NotifyTelegram)
+    ->chatId($chatId)
+    ->message('<b>Pedido #123</b> confirmado!')
+    ->parseMode('HTML');
+
+// Foto a partir de URL (message vira a legenda)
+(new NotifyTelegram)
+    ->chatId($chatId)
+    ->imageUrl('https://cdn.app.com/banner.jpg')
+    ->message('Confira a novidade!');
+
+// Localização (pino no mapa)
+(new NotifyTelegram)->chatId($chatId)->location(-23.5614, -46.6559);
+
+// Contato (lastName é opcional)
+(new NotifyTelegram)->chatId($chatId)->contact('+5511999998888', 'Suporte', 'NotifyApp');
+
+// Enquete anônima (padrão)
+(new NotifyTelegram)->chatId($chatId)->poll('Gostou?', ['Sim', 'Não']);
+
+// Enquete não-anônima
+(new NotifyTelegram)->chatId($chatId)->poll('Qual prefere?', ['A', 'B', 'C'], isAnonymous: false);
+```
+
+#### Exemplos de botões inline
+
+```php
+// Um botão por linha (cada ->button() vira uma nova linha)
+(new NotifyTelegram)
+    ->chatId($chatId)
+    ->message('Escolha uma ação:')
+    ->button('Ver pedido', 'https://app.com/pedidos/1')
+    ->button('Falar com suporte', 'https://app.com/suporte');
+
+// Grade completa: array externo = linhas, interno = botões na mesma linha
+(new NotifyTelegram)
+    ->chatId($chatId)
+    ->message('Confirma?')
+    ->buttons([
+        [
+            ['text' => '✅ Sim', 'url' => 'https://app.com/sim'],
+            ['text' => '❌ Não', 'url' => 'https://app.com/nao'],
+        ],
+        [
+            ['text' => 'Ver detalhes', 'url' => 'https://app.com/detalhes'],
+        ],
+    ]);
+```
+
+#### Exemplos de opções comuns
+
+```php
+// Silencioso + protegido contra encaminhamento/cópia
+(new NotifyTelegram)
+    ->chatId($chatId)
+    ->message('Aviso confidencial')
+    ->silent()
+    ->protectContent();
+
+// Responder a uma mensagem + enviar para um tópico de grupo/fórum
+(new NotifyTelegram)
+    ->chatId($grupoId)
+    ->message('Respondendo...')
+    ->replyTo(4521)        // message_id do Telegram da mensagem original
+    ->threadId(12);        // tópico do fórum
+
+// Tag + bot/credencial específico + webhook próprio
+(new NotifyTelegram)
+    ->chatId($chatId)
+    ->message('Pedido enviado')
+    ->tag(['pedidos', 'transacional'])
+    ->configId('Bot Vendas')
+    ->webhookUrl('https://sua-app.com/notify/webhook');
+```
+
+#### Envio on-demand (sem model)
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+Notification::route('telegram', '123456789')->notify(new DeployConcluido());
+```
+
+#### Gerenciar mensagens enviadas
+
+Edite, apague ou fixe uma mensagem já enviada pelo próprio recurso de consulta,
+em `NotifyQuery::server()->telegram($notificationId)`. Essas operações são **síncronas**
+e usam apenas o **`notification_id`** — o UUID retornado no envio (`202`). O servidor
+resolve o `chat_id` + `message_id` salvos, então você **não precisa mais** capturar o
+`message_id` do Telegram no webhook.
+
+O `notification_id` vem direto na resposta do envio, no `NotifySentEvent`:
+
+```php
+use RiseTechApps\Notify\Events\NotifySentEvent;
+
+public function handle(NotifySentEvent $event): void
+{
+    if ($event->channel === 'telegram') {
+        $notificationId = $event->response['notification_id'] ?? null;
+        // guarde onde quiser, se for precisar editar/fixar/apagar depois
+    }
+}
+```
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Editar o texto (com parse mode opcional)
+NotifyQuery::server()->telegram($notificationId)->edit('Texto *editado* ✏️');
+NotifyQuery::server()->telegram($notificationId)->edit('<b>Novo</b>', 'HTML');
+
+// Editar a legenda de uma mídia
+NotifyQuery::server()->telegram($notificationId)->editCaption('Nova legenda');
+
+// Apagar
+NotifyQuery::server()->telegram($notificationId)->delete();
+
+// Fixar (opcionalmente sem notificar os membros)
+NotifyQuery::server()->telegram($notificationId)->pin(disableNotification: true);
+
+// Todas retornam: ['status' => bool, 'message' => string|null, 'http' => int]
+```
+
+**Ciclo de vida completo do Telegram:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` ou `Notification::route('telegram', $chatId)->notify(...)` |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->telegram()->tag('pedidos')->status('sent')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->telegram('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->telegram('uuid')->cancel()` |
+| Editar/apagar/fixar | `NotifyQuery::server()->telegram($notificationId)->edit(...)` etc. |
+
+Detalhes das consultas em [Consultas de status → Telegram](#telegram-endpoints-dedicados).
 
 ---
 
 ### Slack
 
+Funciona em dois modos, conforme a credencial no servidor: **Bot Token** (entrega no
+`channel` informado) ou **Incoming Webhook** (entrega numa URL de webhook do Slack).
+O servidor enfileira (resposta `202` com `notification_id`) e devolve o status pelo webhook.
+
 ```php
 use RiseTechApps\Notify\Message\NotifySlack;
 
-public function toNotifySlack($notifiable): NotifySlack
+class FalhaPagamento extends Notification
 {
-    return (new NotifySlack)
-        ->channel('#alertas')
-        ->title('Erro crítico')
-        ->message('Ocorreu um erro na integração de pagamento.')
-        ->color('#FF0000')
-        ->field('Ambiente', 'Produção')
-        ->field('Servidor', 'api-01');
+    public function via($notifiable): array
+    {
+        return ['notify.slack'];
+    }
+
+    public function toNotifySlack($notifiable): NotifySlack
+    {
+        return (new NotifySlack)
+            ->channel('#alertas')
+            ->title('Erro crítico')
+            ->message('Ocorreu um erro na integração de pagamento.')
+            ->color('#FF0000')
+            ->field('Ambiente', 'Produção')
+            ->field('Servidor', 'api-01')
+            ->tag('alertas');               // opcional, agrupa/filtra
+    }
 }
 ```
 
+**Conteúdo:**
+
 | Método | Descrição |
 |---|---|
-| `->message(string)` | Texto principal. Máx: 4000 chars |
-| `->channel(string)` | Canal destino, ex: `#alerts` ou `C01234ABC` |
-| `->title(string)` | Título do bloco |
+| `->message(string)` | Texto principal. Máx: 4000 chars (obrigatório, salvo com `blocks` ou arquivo) |
+| `->channel(string)` | Canal destino (Bot Token), ex: `#alerts`, `C01234ABC` **ou alias** (ex.: `equipe`) |
+| `->title(string)` | Título do attachment (ativa o card rico) |
 | `->color(string)` | Cor hex da barra lateral: `#FF0000` |
-| `->field(label, value)` | Campo chave-valor no bloco |
-| `->fields(array)` | Múltiplos campos de uma vez |
-| `->configId(string)` | UUID da config Slack |
-| `->webhookUrl(string)` | Webhook URL do Slack |
+| `->footer(string)` | Rodapé do attachment |
+| `->field(label, value, short?)` | Campo chave-valor no attachment (`short` = lado a lado) |
+| `->fields(array)` | Define todos os campos de uma vez (substitui) |
+| `->blocks(array)` | Block Kit cru (seções, botões, dividers, imagens). `message` vira fallback |
+
+**Threads / menções:**
+
+| Método | Descrição |
+|---|---|
+| `->thread(string)` | Responde em thread (o `ts` da mensagem-pai) |
+| `->mentions(string\|array)` | Menções (acumula): `U123` (user), `C123` (canal), `channel`, `here` |
+
+**Aparência:**
+
+| Método | Descrição |
+|---|---|
+| `->username(string)` | Sobrescreve o nome do remetente |
+| `->iconEmoji(string)` | Ícone por emoji, ex: `:rocket:` |
+| `->iconUrl(string)` | Ícone por URL |
+
+**Arquivo (Bot Token):**
+
+| Método | Descrição |
+|---|---|
+| `->file(url, title?, filename?)` | Anexa um arquivo por URL |
+
+**Transporte / servidor:**
+
+| Método | Descrição |
+|---|---|
+| `->slackWebhookUrl(string)` | Força o modo Incoming Webhook (canal fixo; o `channel` é ignorado) |
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar. Acumula e mescla com `notify.slack.tags` |
+| `->configId(string)` | Credencial Slack (UUID ou label). Sobrescreve `notify.slack.config_id` |
+| `->webhookUrl(string)` | URL de callback **de status** (default: `notify.webhook` global) |
+
+> ⚠️ Não confunda `->slackWebhookUrl()` (destino de entrega no Slack, modo Incoming
+> Webhook) com `->webhookUrl()` (callback de status que o **seu** app recebe).
+
+**Modos de corpo** (prioridade no servidor): **1)** `blocks` (Block Kit) → `message` vira
+fallback · **2)** attachment (quando há `title`/`fields`) → card colorido · **3)** texto simples
+(só `message`).
+
+**Modos de transporte:** **Bot Token** (`chat.postMessage`) — qualquer canal, habilita
+thread, upload e editar/apagar · **Incoming Webhook** (`->slackWebhookUrl()`) — canal fixo,
+mais simples.
+
+**Defaults no `config/notify.php`:**
+
+```php
+'slack' => [
+    'config_id' => env('NOTIFY_SLACK_CONFIG_ID'), // usado quando não passa ->configId()
+    'tags'      => [],                            // mescladas com as da notificação
+],
+```
+
+Precedência: `->configId()` da notificação **sobrescreve** o `config_id` do config; as tags
+da notificação são **somadas** às `notify.slack.tags` (sem duplicar).
+
+#### Formas de disparo
+
+Toda mensagem Slack é construída com `NotifySlack` e enviada pelo sistema de notificações
+do Laravel. Há três formas:
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+// 1. A partir de um model Notifiable (canal vem do routeNotificationForSlack(), se houver)
+$user->notify(new FalhaPagamento());
+
+// 2. On-demand, sem model — o alvo só é usado se a mensagem não trouxer ->channel()/->slackWebhookUrl()
+Notification::route('slack', '#deploys')->notify(new FalhaPagamento());
+```
+
+Para **testar rapidamente** qualquer corpo de mensagem, crie uma notification genérica que
+recebe um `NotifySlack` pronto:
+
+```php
+namespace App\Notifications;
+
+use Illuminate\Notifications\Notification;
+use RiseTechApps\Notify\Message\NotifySlack;
+
+class TestSlack extends Notification
+{
+    public function __construct(protected NotifySlack $slack) {}
+
+    public function via($notifiable): array
+    {
+        return ['notify.slack'];
+    }
+
+    public function toNotifySlack($notifiable): NotifySlack
+    {
+        return $this->slack;
+    }
+}
+```
+
+```php
+use Illuminate\Support\Facades\Notification;
+use App\Notifications\TestSlack;
+use RiseTechApps\Notify\Message\NotifySlack;
+
+// 3. Dispare qualquer um dos exemplos abaixo:
+Notification::route('slack', '#deploys')->notify(new TestSlack(
+    (new NotifySlack)->channel('#deploys')->message('Teste 🚀')
+));
+```
+
+#### Exemplos por possibilidade
+
+Cada bloco abaixo é o `NotifySlack` que você retorna no `toNotifySlack()` (ou passa para a
+`TestSlack` acima):
+
+```php
+use RiseTechApps\Notify\Message\NotifySlack;
+
+// Texto simples
+(new NotifySlack)->channel('#deploys')->message('Deploy concluído 🚀')->tag('deploys');
+
+// Attachment com campos (short = lado a lado)
+(new NotifySlack)
+    ->channel('#alertas')
+    ->title('CPU 90%')
+    ->message('Alerta')
+    ->color('#FF0000')
+    ->field('Servidor', 'web-01', short: true)
+    ->footer('Monitoramento');
+
+// Block Kit (botões)
+(new NotifySlack)
+    ->channel('#deploys')
+    ->message('Deploy v1.2.0')   // fallback
+    ->blocks([
+        ['type' => 'section', 'text' => ['type' => 'mrkdwn', 'text' => '*Deploy v1.2.0* :rocket:']],
+        ['type' => 'divider'],
+        ['type' => 'actions', 'elements' => [
+            ['type' => 'button', 'text' => ['type' => 'plain_text', 'text' => 'Aprovar'],
+             'style' => 'primary', 'url' => 'https://ci/482'],
+        ]],
+    ]);
+
+// Menções
+(new NotifySlack)->channel('#incidentes')->message('Incidente aberto.')->mentions(['here', 'U024BE7LH']);
+
+// Thread (responde à mensagem-pai pelo ts)
+(new NotifySlack)->channel('#deploys')->message('Deploy concluído ✅')->thread('1718150400.123456');
+
+// Incoming Webhook + aparência (channel é ignorado)
+(new NotifySlack)
+    ->message('Backup ok.')
+    ->slackWebhookUrl('https://hooks.slack.com/services/T/B/x')
+    ->username('Backup Bot')
+    ->iconEmoji(':floppy_disk:');
+
+// Upload de arquivo (Bot Token)
+(new NotifySlack)
+    ->channel('#relatorios')
+    ->message('Relatório em anexo:')
+    ->file('https://storage.empresa.com/maio.pdf', 'Maio/2026');
+
+// Aparência com ícone por URL
+(new NotifySlack)
+    ->channel('#geral')
+    ->message('Olá do bot 👋')
+    ->username('Status Bot')
+    ->iconUrl('https://app.com/bot-avatar.png');
+
+// Credencial específica (multi-tenant) + múltiplas tags
+(new NotifySlack)
+    ->channel('#vendas')
+    ->message('Nova venda registrada')
+    ->configId('Slack Workspace Vendas')   // UUID ou label
+    ->tag(['vendas', 'transacional']);
+
+// Callback de status próprio deste envio (≠ slackWebhookUrl)
+(new NotifySlack)
+    ->channel('#deploys')
+    ->message('Pipeline iniciado')
+    ->webhookUrl('https://sua-app.com/notify/webhook');
+```
+
+O canal destino também pode vir do `routeNotificationForSlack()` no seu Notifiable — ele
+é usado **apenas** quando a mensagem não traz `->channel()` nem `->slackWebhookUrl()`:
+
+```php
+public function routeNotificationForSlack(): string
+{
+    return '#minha-equipe';
+}
+```
+
+**Envio on-demand** (sem model):
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+Notification::route('slack', '#deploys')->notify(new FalhaPagamento());
+```
+
+#### Gerenciar mensagens enviadas (só Bot Token)
+
+Edite ou apague uma mensagem já enviada pelo recurso de consulta, em
+`NotifyQuery::server()->slack($notificationId)`. São operações **síncronas** e funcionam
+**apenas no modo Bot Token** (Incoming Webhook não permite editar/apagar). O
+`notification_id` vem na resposta do envio (`NotifySentEvent->response['notification_id']`).
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Editar (chat.update)
+NotifyQuery::server()->slack($notificationId)->edit('Deploy *concluído* ✅');
+
+// Apagar (chat.delete)
+NotifyQuery::server()->slack($notificationId)->delete();
+
+// Ambas retornam: ['status' => bool, 'message' => string|null, 'http' => int]
+```
+
+**Ciclo de vida completo do Slack:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` ou `Notification::route('slack', $canal)->notify(...)` |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->slack()->tag('deploys')->status('sent')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->slack('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->slack('uuid')->cancel()` |
+| Editar/apagar (Bot Token) | `NotifyQuery::server()->slack($notificationId)->edit(...)` / `->delete()` |
+
+Detalhes em [Consultas de status → Slack](#slack-endpoints-dedicados).
 
 ---
 
 ### Discord
 
+Envia texto simples ou embed rico (título, cor, campos, imagem, thumbnail, rodapé).
+O servidor enfileira (resposta `202` com `notification_id`) e devolve o status pelo webhook.
+
 ```php
 use RiseTechApps\Notify\Message\NotifyDiscord;
 
-public function toNotifyDiscord($notifiable): NotifyDiscord
+class NovoCadastro extends Notification
 {
-    return (new NotifyDiscord)
-        ->username('NotifyBot')
-        ->title('Novo usuário cadastrado')
-        ->message('João Silva acabou de se cadastrar.')
-        ->color(3066993) // verde em decimal
-        ->field('Email', 'joao@email.com')
-        ->field('Plano', 'Pro', inline: true);
+    public function via($notifiable): array
+    {
+        return ['notify.discord'];
+    }
+
+    public function toNotifyDiscord($notifiable): NotifyDiscord
+    {
+        return (new NotifyDiscord)
+            ->username('NotifyBot')
+            ->title('Novo usuário cadastrado')
+            ->message('João Silva acabou de se cadastrar.')
+            ->color(0x2ecc71)               // verde (hex) — ou 3066993 em decimal
+            ->field('Email', 'joao@email.com')
+            ->field('Plano', 'Pro', inline: true)
+            ->tag('cadastros');             // opcional, agrupa/filtra
+    }
 }
 ```
 
+**Destino** (precedência: `discordWebhookUrl` › `channel` alias › webhook padrão da config):
+
 | Método | Descrição |
 |---|---|
-| `->message(string)` | Texto da mensagem. Máx: 2000 chars |
-| `->username(string)` | Nome exibido do bot. Máx: 80 chars |
-| `->title(string)` | Título do embed |
-| `->color(int)` | Cor em decimal, ex: `16729344` (vermelho) |
+| `->channel(string)` | Alias do canal (ex.: `equipe`); o servidor resolve para a webhook URL |
+| `->discordWebhookUrl(string)` | Webhook URL direta (override; ver em Transporte) |
+
+**Conteúdo / embed:**
+
+| Método | Descrição |
+|---|---|
+| `->message(string)` | Texto da mensagem. Máx: 2000 chars (obrigatório, salvo com `embeds`/arquivo) |
+| `->username(string)` | Sobrescreve o nome do webhook. Máx: 80 chars |
+| `->avatarUrl(string)` | Sobrescreve o avatar do webhook (URL) |
+| `->title(string)` | Título do embed (atalho). Máx: 256 chars |
+| `->color(int)` | Cor do embed em decimal/hex, ex: `0xe74c3c` (vermelho) |
 | `->imageUrl(string)` | Imagem grande no embed |
 | `->thumbnail(string)` | Miniatura no embed |
-| `->footer(string)` | Rodapé do embed |
-| `->field(label, value, inline?)` | Campo do embed (máx: 25) |
-| `->fields(array)` | Múltiplos campos de uma vez |
-| `->configId(string)` | UUID da config Discord |
-| `->webhookUrl(string)` | Webhook URL do Discord |
+| `->footer(string)` | Rodapé do embed. Máx: 2048 chars |
+| `->field(label, value, inline?)` | Campo do embed (`inline` default `true`; máx 25) |
+| `->fields(array)` | Define todos os campos de uma vez (substitui) |
+| `->embeds(array)` | Embeds crus do Discord (máx 10). Têm **prioridade** sobre o embed-atalho |
+
+**Menções:**
+
+| Método | Descrição |
+|---|---|
+| `->mentions(string\|array)` | Menções (acumula): `"123"` (user), `"&456"` (cargo/role), `"everyone"`, `"here"` |
+| `->allowedMentions(array)` | Override cru do `allowed_mentions` nativo (sobrescreve o derivado de `mentions`) |
+
+**Thread / extras:**
+
+| Método | Descrição |
+|---|---|
+| `->threadId(string)` | Posta numa thread já existente (canal de texto) |
+| `->threadName(string)` | Cria uma thread nova (só em canais de fórum/mídia). Máx: 100 chars |
+| `->tts(bool?)` | Text-to-speech |
+| `->file(url, filename?)` | Anexa um arquivo por URL (o servidor baixa e faz o upload) |
+
+**Transporte / servidor:**
+
+| Método | Descrição |
+|---|---|
+| `->discordWebhookUrl(string)` | Webhook de destino do Discord (override da config) |
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar. Acumula e mescla com `notify.discord.tags` |
+| `->configId(string)` | Credencial Discord (UUID ou label). Sobrescreve `notify.discord.config_id` |
+| `->webhookUrl(string)` | URL de callback **de status** (default: `notify.webhook` global) |
+
+> ⚠️ Não confunda `->discordWebhookUrl()` (destino de entrega no Discord) com
+> `->webhookUrl()` (callback de status que o **seu** app recebe). O card rico do Discord
+> são `embeds` (≠ do Slack, que usa `blocks`); a cor é `int` decimal/hex; menção de cargo
+> usa o prefixo `&`.
+
+**Defaults no `config/notify.php`:**
+
+```php
+'discord' => [
+    'config_id' => env('NOTIFY_DISCORD_CONFIG_ID'), // usado quando não passa ->configId()
+    'tags'      => [],                              // mescladas com as da notificação
+],
+```
+
+Precedência: `->configId()` da notificação **sobrescreve** o `config_id` do config; as tags
+da notificação são **somadas** às `notify.discord.tags` (sem duplicar).
+
+#### Formas de disparo
+
+Toda mensagem Discord é construída com `NotifyDiscord` e enviada pelo sistema de
+notificações do Laravel. Há três formas:
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+// 1. A partir de um model Notifiable (destino vem do routeNotificationForDiscord(), se houver)
+$user->notify(new NovoCadastro());
+
+// 2. On-demand, sem model
+Notification::route('discord', $webhookOuId)->notify(new NovoCadastro());
+```
+
+```php
+public function routeNotificationForDiscord(): string
+{
+    return 'https://discord.com/api/webhooks/123/abc'; // ou um id/label de config
+}
+```
+
+Para **testar rapidamente** qualquer corpo de mensagem, crie uma notification genérica que
+recebe um `NotifyDiscord` pronto:
+
+```php
+namespace App\Notifications;
+
+use Illuminate\Notifications\Notification;
+use RiseTechApps\Notify\Message\NotifyDiscord;
+
+class TestDiscord extends Notification
+{
+    public function __construct(protected NotifyDiscord $discord) {}
+
+    public function via($notifiable): array
+    {
+        return ['notify.discord'];
+    }
+
+    public function toNotifyDiscord($notifiable): NotifyDiscord
+    {
+        return $this->discord;
+    }
+}
+```
+
+```php
+use Illuminate\Support\Facades\Notification;
+use App\Notifications\TestDiscord;
+use RiseTechApps\Notify\Message\NotifyDiscord;
+
+// Dispare qualquer um dos exemplos abaixo:
+Notification::route('discord', 'default')->notify(new TestDiscord(
+    (new NotifyDiscord)->message('Teste 🚀')
+));
+```
+
+#### Exemplos por possibilidade
+
+Cada bloco abaixo é o `NotifyDiscord` que você retorna no `toNotifyDiscord()` (ou passa
+para a `TestDiscord` acima):
+
+```php
+use RiseTechApps\Notify\Message\NotifyDiscord;
+
+// Texto simples
+(new NotifyDiscord)->message('Novo cadastro: João')->tag('cadastros');
+
+// Por alias de canal (cadastrado na config — o servidor resolve a webhook URL)
+(new NotifyDiscord)->channel('equipe')->message('Deploy concluído ✅');
+
+// Embed completo (atalho)
+(new NotifyDiscord)
+    ->username('Status Bot')
+    ->avatarUrl('https://app.com/bot.png')
+    ->title('Build #482')
+    ->message('Pipeline finalizado com sucesso.')
+    ->color(0x2ecc71)
+    ->field('Branch', 'main', inline: true)
+    ->field('Duração', '3m12s', inline: true)
+    ->thumbnail('https://cdn.app.com/ok.png')
+    ->footer('CI/CD');
+
+// Menções (role usa prefixo &)
+(new NotifyDiscord)
+    ->message('Incidente aberto.')
+    ->mentions(['here', '&987654321', '123456789']);
+
+// Controle fino das menções (allowed_mentions cru)
+(new NotifyDiscord)
+    ->message('Aviso geral')
+    ->allowedMentions(['parse' => ['everyone'], 'users' => ['123'], 'roles' => ['456']]);
+
+// Postar numa thread existente
+(new NotifyDiscord)->message('Atualização: mitigado.')->threadId('1112223334445556667');
+
+// Criar thread nova (canal de fórum)
+(new NotifyDiscord)->message('Nova discussão')->threadName('Deploy 2026-06');
+
+// Upload de arquivo por URL (o servidor baixa e envia)
+(new NotifyDiscord)
+    ->message('Log em anexo:')
+    ->file('https://storage.empresa.com/erro.log', 'erro.log');
+
+// Embeds crus (prioridade sobre o atalho)
+(new NotifyDiscord)
+    ->message('Resumo')
+    ->embeds([
+        ['title' => 'Embed 1', 'description' => 'Linha', 'color' => 0x3498db],
+        ['title' => 'Embed 2', 'description' => 'Outra'],
+    ]);
+
+// Webhook de destino específico + TTS
+(new NotifyDiscord)
+    ->message('Mensagem falada')
+    ->tts()
+    ->discordWebhookUrl('https://discord.com/api/webhooks/123/abc');
+```
+
+#### Gerenciar mensagens enviadas
+
+Edite ou apague uma mensagem já enviada pelo recurso de consulta, em
+`NotifyQuery::server()->discord($notificationId)`. São operações **síncronas** que usam
+apenas o `notification_id` (vem na resposta do envio, `NotifySentEvent->response['notification_id']`).
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Editar (PATCH)
+NotifyQuery::server()->discord($notificationId)->edit('Incidente resolvido ✅');
+
+// Apagar (DELETE)
+NotifyQuery::server()->discord($notificationId)->delete();
+
+// Ambas retornam: ['status' => bool, 'message' => string|null, 'http' => int]
+```
+
+**Ciclo de vida completo do Discord:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` ou `Notification::route('discord', $alvo)->notify(...)` |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->discord()->tag('cadastros')->status('sent')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->discord('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->discord('uuid')->cancel()` |
+| Editar/apagar | `NotifyQuery::server()->discord($notificationId)->edit(...)` / `->delete()` |
+
+Detalhes em [Consultas de status → Discord](#discord-endpoints-dedicados).
 
 ---
 
 ### Teams
 
+Monta um card do Microsoft Teams (título, subtítulo, cor, imagem, facts e botões) — ou um
+card cru via `->card()`. O servidor enfileira (resposta `202` com `notification_id`) e
+devolve o status pelo webhook.
+
 ```php
 use RiseTechApps\Notify\Message\NotifyTeams;
 
-public function toNotifyTeams($notifiable): NotifyTeams
+class RelatorioSemanal extends Notification
 {
-    return (new NotifyTeams)
-        ->title('Relatório semanal disponível')
-        ->message('O relatório de vendas da semana está pronto.')
-        ->color('0078D4')
-        ->fact('Período', 'Mar/2026')
-        ->fact('Total', 'R$ 48.200,00')
-        ->action('Ver relatório', 'https://app.com/reports');
+    public function via($notifiable): array
+    {
+        return ['notify.teams'];
+    }
+
+    public function toNotifyTeams($notifiable): NotifyTeams
+    {
+        return (new NotifyTeams)
+            ->channel('equipe')               // opcional: alias do canal
+            ->title('Relatório semanal disponível')
+            ->message('O relatório de vendas da semana está pronto.')
+            ->color('0078D4')
+            ->fact('Período', 'Mar/2026')
+            ->fact('Total', 'R$ 48.200,00')
+            ->action('Ver relatório', 'https://app.com/reports')
+            ->tag('relatorios');               // opcional, agrupa/filtra
+    }
 }
 ```
 
+**Destino** (precedência: `teamsWebhookUrl` › `channel` alias › webhook padrão da config):
+
 | Método | Descrição |
 |---|---|
-| `->message(string)` | Corpo da mensagem. Máx: 4000 chars |
-| `->title(string)` | Título do card |
-| `->color(string)` | Cor hex sem `#`, ex: `0078D4` |
+| `->channel(string)` | Alias do canal (ex.: `equipe`); o servidor resolve para a webhook URL |
+| `->teamsWebhookUrl(string)` | Webhook URL direta de destino (override) |
+
+**Card:**
+
+| Método | Descrição |
+|---|---|
+| `->message(string)` | Corpo da mensagem. Máx: 4000 chars (obrigatório, salvo com `card` cru) |
+| `->title(string)` | Título do card. Máx: 255 |
+| `->subtitle(string)` | Subtítulo do card. Máx: 255 |
+| `->color(string)` | Cor hex sem `#`, ex: `0078D4` (o `#` é removido automaticamente) |
+| `->imageUrl(string)` | Imagem do card |
 | `->fact(label, value)` | Par chave-valor no card |
-| `->facts(array)` | Múltiplos facts de uma vez |
+| `->facts(array)` | Define todos os facts de uma vez (substitui) |
 | `->action(label, url)` | Botão de ação |
-| `->actions(array)` | Múltiplos botões de uma vez |
-| `->configId(string)` | UUID da config Teams |
-| `->webhookUrl(string)` | Webhook URL do Teams |
+| `->actions(array)` | Define todos os botões de uma vez (substitui) |
+| `->card(array)` | MessageCard/Adaptive Card cru (passthrough; ignora o atalho acima) |
+
+**Servidor:**
+
+| Método | Descrição |
+|---|---|
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar. Acumula e mescla com `notify.teams.tags` |
+| `->configId(string)` | Credencial Teams (UUID ou label). Sobrescreve `notify.teams.config_id` |
+| `->webhookUrl(string)` | URL de callback **de status** (default: `notify.webhook` global) |
+
+> ⚠️ Não confunda `->teamsWebhookUrl()` (destino de entrega no Teams) com `->webhookUrl()`
+> (callback de status que o **seu** app recebe).
+
+**Defaults no `config/notify.php`:**
+
+```php
+'teams' => [
+    'config_id' => env('NOTIFY_TEAMS_CONFIG_ID'), // usado quando não passa ->configId()
+    'tags'      => [],                            // mescladas com as da notificação
+],
+```
+
+Precedência: `->configId()` da notificação **sobrescreve** o `config_id` do config; as tags
+da notificação são **somadas** às `notify.teams.tags` (sem duplicar).
+
+**Exemplos:**
+
+```php
+use RiseTechApps\Notify\Message\NotifyTeams;
+
+// Texto simples
+(new NotifyTeams)->message('Build #482 finalizado ✅')->tag('deploys');
+
+// Por alias de canal
+(new NotifyTeams)->channel('equipe')->message('Deploy de produção concluído.');
+
+// Card completo (com subtítulo, imagem, facts e ações)
+(new NotifyTeams)
+    ->title('Novo incidente')
+    ->subtitle('payments-api')
+    ->message('Falha no serviço de pagamento.')
+    ->color('E81123')   // vermelho
+    ->imageUrl('https://cdn.app.com/alert.png')
+    ->fact('Severidade', 'Alta')
+    ->fact('Serviço', 'payments-api')
+    ->action('Abrir runbook', 'https://app.com/runbooks/payments')
+    ->action('Ver dashboard', 'https://app.com/status');
+
+// Card cru (MessageCard/Adaptive Card) — passthrough total
+(new NotifyTeams)->card([
+    '@type'    => 'MessageCard',
+    '@context' => 'http://schema.org/extensions',
+    'summary'  => 'Resumo',
+    'sections' => [['activityTitle' => 'Meu card', 'text' => 'Conteúdo']],
+]);
+
+// Webhook de destino direto + callback de status próprio
+(new NotifyTeams)
+    ->teamsWebhookUrl('https://outlook.office.com/webhook/X')
+    ->message('Aviso')
+    ->webhookUrl('https://sua-app.com/notify/webhook');
+```
+
+**Envio on-demand** (sem model):
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+Notification::route('teams', $idOuWebhook)->notify(new RelatorioSemanal());
+```
+
+**Ciclo de vida completo do Teams:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` ou `Notification::route('teams', $alvo)->notify(...)` |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->teams()->tag('relatorios')->status('sent')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->teams('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->teams('uuid')->cancel()` |
+
+Detalhes em [Consultas de status → Teams](#teams-endpoints-dedicados).
+
+> O Teams entrega via Incoming Webhook — **não há** editar/apagar mensagem como em
+> Telegram/Slack/Discord.
 
 ---
 
 ### WebSocket
 
+Dispara um evento em tempo real em um canal público, privado ou de presença.
+O servidor enfileira (resposta `202` com `notification_id`) e devolve o status pelo webhook.
+
 ```php
 use RiseTechApps\Notify\Message\NotifyWebSocket;
 
-public function toNotifyWebSocket($notifiable): NotifyWebSocket
+class PedidoAtualizado extends Notification
 {
-    return (new NotifyWebSocket)
-        ->channel("private-user.{$notifiable->id}")
-        ->event('OrderStatusUpdated')
-        ->data(['order_id' => 1234, 'status' => 'shipped'])
-        ->private();
+    public function via($notifiable): array
+    {
+        return ['notify.websocket'];
+    }
+
+    public function toNotifyWebSocket($notifiable): NotifyWebSocket
+    {
+        return (new NotifyWebSocket)
+            ->channel("private-user.{$notifiable->id}")
+            ->event('OrderStatusUpdated')
+            ->data(['order_id' => 1234, 'status' => 'shipped'])
+            ->private()
+            ->tag('pedidos');               // opcional, agrupa/filtra
+    }
 }
 ```
 
 | Método | Descrição |
 |---|---|
-| `->channel(string)` | Canal Pusher, ex: `notifications`, `private-user.123` |
+| `->channel(string)` | Canal, ex: `notifications`, `private-user.123` |
 | `->event(string)` | Nome do evento, ex: `OrderUpdated` |
 | `->data(array)` | Payload do evento |
-| `->private(bool?)` | Canal privado (requer auth Pusher) |
-| `->presence(bool?)` | Canal de presence |
-| `->configId(string)` | UUID da config Pusher |
-| `->webhookUrl(string)` | URL de callback |
+| `->private(bool?)` | Canal privado (prefixo `private-` aplicado pelo servidor; requer auth) |
+| `->presence(bool?)` | Canal de presence (prefixo `presence-` aplicado pelo servidor) |
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar. Acumula e mescla com `notify.websocket.tags` |
+| `->configId(string)` | Credencial (UUID ou label). Sobrescreve `notify.websocket.config_id` |
+| `->webhookUrl(string)` | URL de callback **de status** (default: `notify.webhook` global) |
+
+**Defaults no `config/notify.php`:**
+
+```php
+'websocket' => [
+    'config_id' => env('NOTIFY_WEBSOCKET_CONFIG_ID'), // usado quando não passa ->configId()
+    'tags'      => [],                               // mescladas com as da notificação
+],
+```
+
+Precedência: `->configId()` da notificação **sobrescreve** o `config_id` do config; as tags
+da notificação são **somadas** às `notify.websocket.tags` (sem duplicar).
+
+**Exemplos:**
+
+```php
+use RiseTechApps\Notify\Message\NotifyWebSocket;
+
+// Canal público
+(new NotifyWebSocket)
+    ->channel('notifications')
+    ->event('OrderUpdated')
+    ->data(['order_id' => '1234'])
+    ->tag('pedidos');
+
+// Canal privado (por usuário)
+(new NotifyWebSocket)
+    ->channel("user.{$userId}")
+    ->event('NewMessage')
+    ->data(['from' => 'Ana', 'preview' => 'Bom dia!'])
+    ->private();
+
+// Canal de presença
+(new NotifyWebSocket)
+    ->channel('sala-suporte')
+    ->event('UserJoined')
+    ->data(['user' => 'João'])
+    ->presence();
+
+// Credencial específica + múltiplas tags
+(new NotifyWebSocket)
+    ->channel('notifications')
+    ->event('Broadcast')
+    ->data(['msg' => 'Manutenção às 22h'])
+    ->configId('Pusher Produção')
+    ->tag(['avisos', 'sistema']);
+```
+
+**Envio on-demand** (sem model):
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+Notification::route('websocket', 'notifications')->notify(new PedidoAtualizado());
+```
+
+**Ciclo de vida completo do WebSocket:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` ou `Notification::route('websocket', $canal)->notify(...)` |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->websocket()->tag('pedidos')->status('sent')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->websocket('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->websocket('uuid')->cancel()` |
+
+Detalhes em [Consultas de status → WebSocket](#websocket-endpoints-dedicados).
 
 ---
 
 ### Webhook
 
+Faz uma requisição HTTP a um endpoint de destino (ERP, sistema externo etc.). O servidor
+dispara a chamada e devolve o status pelo callback. Não confunda o `url` (destino da
+requisição) com o `webhookUrl` (seu callback de status).
+
 ```php
 use RiseTechApps\Notify\Message\NotifyWebhook;
 
-public function toNotifyWebhook($notifiable): NotifyWebhook
+class PedidoCriado extends Notification
 {
-    return (new NotifyWebhook)
-        ->url('https://erp.empresa.com/api/eventos')
-        ->method('POST')
-        ->payload(['evento' => 'pedido_criado', 'id' => 1234])
-        ->bearerAuth('token-secreto')
-        ->timeout(15);
+    public function via($notifiable): array
+    {
+        return ['notify.webhook'];
+    }
+
+    public function toNotifyWebhook($notifiable): NotifyWebhook
+    {
+        return (new NotifyWebhook)
+            ->url('https://erp.empresa.com/api/eventos')
+            ->method('POST')
+            ->payload(['evento' => 'pedido_criado', 'id' => 1234])
+            ->bearerAuth('token-secreto')
+            ->timeout(15)
+            ->tag('erp');               // opcional, agrupa/filtra
+    }
 }
 ```
 
 | Método | Descrição |
 |---|---|
-| `->url(string)` | URL de destino. Máx: 2048 chars |
+| `->url(string)` | URL de destino. Máx: 2048 chars (se omitido, usa o `default_url` da config) |
 | `->method(string)` | `POST` \| `GET` \| `PUT` \| `PATCH`. Default: `POST` |
 | `->payload(array)` | Body da requisição |
 | `->header(key, value)` | Header customizado |
@@ -439,95 +1612,88 @@ public function toNotifyWebhook($notifiable): NotifyWebhook
 | `->apiKeyAuth(token)` | Autenticação por API Key |
 | `->hmacAuth()` | Assinatura HMAC |
 | `->timeout(int)` | Timeout em segundos. Min: 1, Máx: 60 |
-| `->configId(string)` | UUID da config Webhook |
-| `->webhookUrl(string)` | URL de callback de status |
+| `->tag(string\|array)` | Tag(s) para agrupar/filtrar no histórico (acumula) |
+| `->configId(string)` | Credencial Webhook (UUID ou label) |
+| `->webhookUrl(string)` | URL de callback **de status** (default: `notify.webhook` global) |
+
+> O canal webhook **não tem** bloco de defaults em `config/notify.php` (a chave
+> `notify.webhook` já é o callback global de status). Defina `tag`/`configId` por mensagem.
+
+**Notas de autenticação e entrega:**
+- `bearerAuth`/`apiKeyAuth` exigem o token; `basicAuth` exige usuário+senha. Para API Key, o
+  header é o `api_key_header` da config (default `X-API-KEY`).
+- `hmacAuth()` assina o payload com o `secret` **da config** (SHA-256) e envia
+  `X-Notify-Signature` + `X-Hub-Signature-256` — o segredo não vai no request.
+- Se a config tiver `inject_metadata: true` (default), o servidor injeta um bloco
+  `_notify` (`timestamp`, `source`, `channel`) no payload entregue ao destino.
+- Sucesso = destino respondeu `2xx`. `4xx` (exceto 408/429) = falha permanente (sem retry);
+  `5xx`/timeout/conexão/408/429 = retry com backoff + failover (se houver mais endpoints).
+
+**Envio on-demand** (sem model):
+
+```php
+use Illuminate\Support\Facades\Notification;
+
+Notification::route('webhook', 'https://erp.empresa.com/api/eventos')->notify(new PedidoCriado());
+```
+
+**Ciclo de vida completo do Webhook:**
+
+| Etapa | Como |
+|---|---|
+| Enviar | `$user->notify(...)` ou `Notification::route('webhook', $url)->notify(...)` |
+| Acompanhar status | eventos `NotifySentEvent` e `NotifyWebhookEvent` — ver [Eventos](#eventos-laravel) |
+| Listar histórico | `NotifyQuery::server()->webhook()->tag('erp')->status('sent')->get()` |
+| Detalhe + timeline | `NotifyQuery::server()->webhook('uuid')->get()` |
+| Cancelar (se `created`) | `NotifyQuery::server()->webhook('uuid')->cancel()` |
+
+Detalhes em [Consultas de status → Webhook](#webhook-endpoints-dedicados).
+
+**Config do driver `generic`** (credenciais/defaults no servidor):
+
+```php
+NotifyQuery::server()->webhook()->config()
+    ->driver('generic')
+    ->label('ERP Empresa')
+    ->defaultUrl('https://erp.empresa.com/api/eventos')
+    ->authType('bearer')
+    ->authToken('token-secreto')
+    ->timeout(15)
+    ->injectMetadata(true)
+    ->asDefault()
+    ->save();
+```
 
 ---
 
-## Gerenciamento de configurações de driver
+## Credenciais por driver
 
-As credenciais de cada canal ficam salvas no servidor. Você pode ter múltiplas configurações por canal — uma marcada como `is_default` é usada automaticamente quando nenhum `config_id` é informado no envio.
+> Para criar/atualizar/remover configurações, use `NotifyQuery::server()->{canal}()->config()`
+> — veja [Configurações de driver](#configurações-de-driver).
 
-```php
-use RiseTechApps\Notify\NotifyConfig;
 
-// ── Listar ────────────────────────────────────────────────────────────────────
+> Fonte de verdade: `NotifyQuery::server()->drivers()` (lido dinamicamente do servidor).
+> A tabela abaixo reflete o contrato atual; o `default_driver` de cada canal está marcado.
 
-NotifyConfig::all();             // todas as configs
-NotifyConfig::channel('sms');    // só as configs de SMS
-NotifyConfig::channel('email');  // só as configs de Email
-
-// ── Detalhes ─────────────────────────────────────────────────────────────────
-
-$config = NotifyConfig::find($id);
-// Retorna: id, channel, driver, label, is_default, active, credential_keys
-// credential_keys = chaves das credenciais (nunca os valores)
-
-// ── Criar ─────────────────────────────────────────────────────────────────────
-
-$config = NotifyConfig::create()
-    ->channel('sms')
-    ->driver('twilio')
-    ->label('Twilio Principal')
-    ->credentials([
-        'account_sid' => 'ACxxxxxxxxxxxxxxxx',
-        'auth_token'  => 'xxxxxxxxxxxxxxxx',
-        'from'        => '+15551234567',
-    ])
-    ->asDefault()   // define como padrão do canal
-    ->save();
-
-// $config retorna: ['id' => '...', 'channel' => 'sms', 'driver' => 'twilio', 'label' => '...']
-
-NotifyConfig::create()
-    ->channel('email')
-    ->driver('resend')
-    ->label('Resend Transacional')
-    ->credentials(['api_key' => 're_xxxxxxxx'])
-    ->save();
-
-// ── Atualizar ─────────────────────────────────────────────────────────────────
-// As credenciais são mescladas (merge parcial) — envie só o que quer alterar
-
-NotifyConfig::update($id)
-    ->label('Twilio Backup')
-    ->credentials(['auth_token' => 'novo-token'])
-    ->save();
-
-NotifyConfig::update($id)
-    ->active(false)   // desativar
-    ->save();
-
-// ── Definir como padrão ───────────────────────────────────────────────────────
-
-NotifyConfig::setDefault($id);  // remove is_default das outras configs do mesmo canal
-
-// ── Remover ───────────────────────────────────────────────────────────────────
-
-NotifyConfig::delete($id);
-```
-
-### Credenciais por driver
-
-| Canal | Driver | Credenciais necessárias |
+| Canal | Driver | Credenciais (`credential_fields`) |
 |---|---|---|
-| `sms` | `twilio` | `account_sid`, `auth_token`, `from` |
-| `sms` | `zenvia` | `api_token`, `from` |
-| `sms` | `mobizon` | `api_key`, `from` |
-| `email` | `smtp` | `host`, `port`, `username`, `password`, `encryption` |
-| `email` | `mailgun` | `api_key`, `domain`, `endpoint` |
-| `email` | `resend` | `api_key` |
-| `email` | `sendgrid` | `api_key` |
+| `sms` | `mobizon` *(padrão)* | `key`, `api_server` |
+| `sms` | `clicksend` | `username`, `api_key`, `from` |
+| `sms` | `twilio` | `sid`, `token`, `from` |
+| `email` | `smtp` *(padrão)* | *(nenhuma — usa `config/mail.php`)* |
 | `email` | `ses` | `key`, `secret`, `region` |
-| `email` | `postmark` | `server_token` |
-| `push` | `fcm` | `credentials_json` |
-| `apns` | `apns` | `key_id`, `team_id`, `bundle_id`, `private_key` |
+| `email` | `mailgun` | `domain`, `secret`, `endpoint` |
+| `email` | `sendgrid` | `api_key` |
+| `email` | `postmark` | `token` |
+| `email` | `resend` | `api_key` |
+| `push` | `fcm` | `credentials_json` (objeto do Service Account) — `->credentialsFile()` lê o `.json` e embeda; ou `->credentialsJson()` inline |
+| `apns` | `apns` | `key_id`, `team_id`, `bundle_id`, `key_path`, `production` |
 | `telegram` | `telegram` | `bot_token` |
-| `slack` | `slack` | `bot_token` |
-| `discord` | `discord` | `webhook_url` |
-| `teams` | `teams` | `webhook_url` |
-| `websocket` | `pusher` | `app_id`, `app_key`, `app_secret`, `cluster` |
-| `webhook` | `webhook` | `default_url` |
+| `slack` | `slack` | `bot_token`, `webhook_url`, `default_channel` |
+| `discord` | `webhook` | `webhook_url`, `username`, `avatar_url` |
+| `teams` | `webhook` | `webhook_url`, `theme_color` |
+| `websocket` | `pusher` | `app_id`, `key`, `secret`, `cluster`, `host`, `port`, `scheme` |
+| `webhook` | `generic` | `default_url`, `timeout`, `auth_type`, `auth_token`, `auth_user`, `auth_password`, `api_key_header`, `secret`, `inject_metadata` |
 
 ### Usando uma config específica no envio
 
@@ -546,9 +1712,9 @@ public function toNotifySms($notifiable): NotifySms
 // Campanha
 NotifyCampaignBuilder::sms()
     ->name('Promo')
-    ->content('Olá {{name}}!')
+    ->content('Olá {name}!')
     ->contacts([...])
-    ->configId('uuid-da-config-zenvia')
+    ->configId('uuid-da-config')
     ->send();
 ```
 
@@ -567,31 +1733,34 @@ use RiseTechApps\Notify\NotifyCampaignBuilder;
 
 $campaign = NotifyCampaignBuilder::sms()
     ->name('Promo Dia das Mães')
-    ->content('Olá {{name}}! 30% OFF hoje. Use: MAES30. Loja.com')
+    ->content('Olá {name}! 30% OFF hoje. Use: {cupom}. Loja.com')
+    ->tag(['promo', 'maes'])
     ->contacts([
-        ['phone' => '5521981425950', 'name' => 'João'],
-        ['phone' => '5521969014860', 'name' => 'Maria'],
+        ['phone' => '5521981425950', 'name' => 'João', 'extra_data' => ['cupom' => 'MAES30']],
+        ['phone' => '5521969014860', 'name' => 'Maria', 'extra_data' => ['cupom' => 'MAES30']],
     ])
     ->webhookUrl('https://sua-app.com/notify/webhook/campaign')
     ->ratePerMinute(100)
     ->send();
 
-// $campaign é um NotifyCampaign com server_campaign_id, status, progress, etc.
+// $campaign é o array cru da resposta do servidor (campaign_id, status, ...)
 ```
 
 | Método | Descrição |
 |---|---|
 | `->name(string)` | Nome da campanha |
-| `->content(string)` | Texto do SMS. Máx: 160 chars. Variáveis: `{{name}}`, `{{phone}}` + chaves de `extra_data` |
-| `->from(string)` | Remetente / sender ID |
-| `->contacts(array)` | Array direto: `[['phone' => '...', 'name' => '...']]` |
-| `->fromQuery(Builder, col, nameCol?)` | Via query Eloquent — processada em chunks de 500 |
-| `->fromCollection(Collection, col, nameCol?)` | Via Collection Laravel |
+| `->content(string)` | Texto do SMS. Máx: 160 chars. Variáveis (chave simples): `{name}`, `{phone}` + chaves de `extra_data` |
+| `->tag(string\|array)` | Tag(s) propagada(s) para cada notificação |
+| `->contacts(array)` | Array direto: `[['phone' => '...', 'name' => '...', 'extra_data' => [...]]]` |
+| `->fromQuery(Builder, col, nameCol?, extraCols?)` | Via query Eloquent — processada em chunks de 500 |
+| `->fromCollection(Collection, col, nameCol?, extraCols?)` | Via Collection Laravel |
 | `->configId(string)` | UUID da config SMS |
 | `->webhookUrl(string)` | URL de callback de progresso |
 | `->ratePerMinute(int)` | Envios por minuto. Min: 1, Máx: 600. Default: 60 |
 | `->scheduledAt(string)` | Agendamento: `'2026-06-01 08:00:00'` |
-| `->send()` | Envia e retorna `NotifyCampaign` |
+| `->send()` | Envia e retorna o array da resposta do servidor |
+
+> O servidor não aceita mais `from`/sender ID em SMS — o remetente vem da credencial (config).
 
 ---
 
@@ -606,6 +1775,7 @@ $campaign = NotifyCampaignBuilder::email()
     ->line('Confira as novidades deste mês.')
     ->action('https://app.com/blog', 'Ler mais')
     ->from('news@app.com', 'Minha App')
+    ->tag('newsletter')
     ->contacts([
         ['email' => 'joao@email.com', 'name' => 'João'],
         ['email' => 'maria@email.com', 'name' => 'Maria'],
@@ -614,6 +1784,9 @@ $campaign = NotifyCampaignBuilder::email()
     ->scheduledAt('2026-03-15 09:00:00')
     ->send();
 ```
+
+> Email usa placeholder de chave dupla: `{{name}}` + chaves de `extra_data` (ex.: `{{cupom}}`).
+> Se `->from()` não for informado, cai para `config('notify.mail.from.address'|'name')`.
 
 | Método | Descrição |
 |---|---|
@@ -626,17 +1799,18 @@ $campaign = NotifyCampaignBuilder::email()
 | `->action(url, text)` | Botão de call-to-action |
 | `->theme(string)` | Tema do template. Default: `default` |
 | `->signature(string)` | Assinatura |
-| `->from(email, name?)` | Remetente |
+| `->from(email, name?)` | Remetente (default: `config('notify.mail.from.*')`) |
+| `->tag(string\|array)` | Tag(s) propagada(s) para cada notificação |
 | `->addTable(EmailTable\|array)` | Tabela no corpo: `['headers' => [], 'rows' => [[]]]` |
 | `->addList(type, items)` | Lista `ordered` ou `unordered` |
-| `->contacts(array)` | Array direto: `[['email' => '...', 'name' => '...']]` |
-| `->fromQuery(Builder, col, nameCol?)` | Via query Eloquent |
-| `->fromCollection(Collection, col, nameCol?)` | Via Collection |
+| `->contacts(array)` | Array direto: `[['email' => '...', 'name' => '...', 'extra_data' => [...]]]` |
+| `->fromQuery(Builder, col, nameCol?, extraCols?)` | Via query Eloquent |
+| `->fromCollection(Collection, col, nameCol?, extraCols?)` | Via Collection |
 | `->configId(string)` | UUID da config de email |
 | `->webhookUrl(string)` | URL de callback |
 | `->ratePerMinute(int)` | Envios por minuto. Default: 60 |
 | `->scheduledAt(string)` | Agendamento futuro |
-| `->send()` | Envia e retorna `NotifyCampaign` |
+| `->send()` | Envia e retorna o array da resposta do servidor |
 
 ---
 
@@ -654,261 +1828,53 @@ $campaign = NotifyCampaignBuilder::email()
 ```php
 ->fromQuery(
     User::where('active', true)->where('accepts_sms', true),
-    contactColumn: 'phone',  // coluna com telefone ou email no banco
-    nameColumn: 'name'       // opcional
+    contactColumn: 'phone',              // coluna com telefone ou email no banco
+    nameColumn: 'name',                  // opcional
+    extraColumns: ['cupom' => 'coupon']  // viram extra_data (placeholders); ['cupom'] mantém o nome
 )
 ```
 
 **Via Collection:**
 ```php
-->fromCollection($users, contactColumn: 'email', nameColumn: 'full_name')
+->fromCollection($users, contactColumn: 'email', nameColumn: 'full_name', extraColumns: ['cidade'])
 ```
+
+> `extraColumns` aceita lista (`['cidade']` → placeholder `{cidade}`/`{{cidade}}` com o mesmo nome)
+> ou mapa (`['cupom' => 'coupon_code']` → placeholder `{cupom}` lendo a coluna `coupon_code`).
 
 ---
 
-## Gestão de configurações de driver
+## Estado e rastreamento
 
-Use `NotifyConfiguration` para criar e gerenciar as credenciais de cada canal diretamente no servidor. As credenciais são armazenadas criptografadas e nunca são devolvidas nas consultas — apenas as chaves.
+O pacote **não persiste nada localmente** — não há tabelas, models nem migrations.
+Todo o estado (status, eventos, contadores de campanha) vive no servidor.
 
-Ao criar uma configuração com `is_default: true`, ela passa a ser usada automaticamente em todos os envios daquele canal que não passarem um `configId` explícito.
+Para acompanhar uma notificação você tem dois caminhos:
 
-### Criar configuração
-
-```php
-use RiseTechApps\Notify\NotifyConfiguration;
-
-// SMS — Twilio
-NotifyConfiguration::create([
-    'channel'    => 'sms',
-    'driver'     => 'twilio',
-    'label'      => 'Twilio Principal',
-    'is_default' => true,
-    'credentials' => [
-        'account_sid' => 'ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-        'auth_token'  => 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-        'from'        => '+15551234567',
-    ],
-]);
-
-// SMS — Zenvia
-NotifyConfiguration::create([
-    'channel'    => 'sms',
-    'driver'     => 'zenvia',
-    'label'      => 'Zenvia',
-    'credentials' => [
-        'api_token' => 'seu-token-zenvia',
-        'from'      => 'NomeSender',
-    ],
-]);
-
-// Email — SMTP
-NotifyConfiguration::create([
-    'channel'    => 'email',
-    'driver'     => 'smtp',
-    'label'      => 'SMTP Produção',
-    'is_default' => true,
-    'credentials' => [
-        'host'       => 'smtp.mailserver.com',
-        'port'       => 587,
-        'username'   => 'user@dominio.com',
-        'password'   => 'senha',
-        'encryption' => 'tls',
-    ],
-]);
-
-// Email — Resend
-NotifyConfiguration::create([
-    'channel'    => 'email',
-    'driver'     => 'resend',
-    'label'      => 'Resend',
-    'is_default' => true,
-    'credentials' => [
-        'api_key' => 're_xxxxxxxxxxxxxxxx',
-    ],
-]);
-
-// Email — Mailgun
-NotifyConfiguration::create([
-    'channel'     => 'email',
-    'driver'      => 'mailgun',
-    'label'       => 'Mailgun',
-    'credentials' => [
-        'api_key' => 'key-xxxxxxxxxxxxxxxx',
-        'domain'  => 'mg.seudominio.com',
-        'region'  => 'us', // ou 'eu'
-    ],
-]);
-
-// Push — FCM
-NotifyConfiguration::create([
-    'channel'    => 'push',
-    'driver'     => 'fcm',
-    'label'      => 'Firebase Produção',
-    'is_default' => true,
-    'credentials' => [
-        'project_id'   => 'seu-projeto-firebase',
-        'private_key'  => '-----BEGIN PRIVATE KEY-----\n...',
-        'client_email' => 'firebase-adminsdk@projeto.iam.gserviceaccount.com',
-    ],
-]);
-
-// Telegram
-NotifyConfiguration::create([
-    'channel'    => 'telegram',
-    'driver'     => 'telegram',
-    'label'      => 'Bot Principal',
-    'is_default' => true,
-    'credentials' => [
-        'bot_token' => '123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-    ],
-]);
-
-// Slack
-NotifyConfiguration::create([
-    'channel'    => 'slack',
-    'driver'     => 'slack',
-    'label'      => 'Slack #alertas',
-    'is_default' => true,
-    'credentials' => [
-        'webhook_url' => 'https://hooks.slack.com/services/T.../B.../xxx',
-    ],
-]);
-
-// Discord
-NotifyConfiguration::create([
-    'channel'    => 'discord',
-    'driver'     => 'discord',
-    'label'      => 'Discord #geral',
-    'is_default' => true,
-    'credentials' => [
-        'webhook_url' => 'https://discord.com/api/webhooks/xxx/yyy',
-    ],
-]);
-
-// Teams
-NotifyConfiguration::create([
-    'channel'    => 'teams',
-    'driver'     => 'teams',
-    'label'      => 'Teams Engenharia',
-    'is_default' => true,
-    'credentials' => [
-        'webhook_url' => 'https://outlook.office.com/webhook/xxx',
-    ],
-]);
-
-// WebSocket — Pusher
-NotifyConfiguration::create([
-    'channel'    => 'websocket',
-    'driver'     => 'pusher',
-    'label'      => 'Pusher Produção',
-    'is_default' => true,
-    'credentials' => [
-        'app_id'  => 'xxxxxxx',
-        'app_key' => 'xxxxxxxxxxxxxxxxxxxxxxxx',
-        'secret'  => 'xxxxxxxxxxxxxxxxxxxxxxxx',
-        'cluster' => 'us2',
-    ],
-]);
-```
-
-### Listar, atualizar e remover
-
-```php
-// Listar todas
-NotifyConfiguration::all();
-
-// Filtrar por canal
-NotifyConfiguration::channel('sms');
-NotifyConfiguration::channel('email');
-
-// Buscar por ID (retorna chaves das credenciais, nunca os valores)
-NotifyConfiguration::find('uuid');
-
-// Atualizar — merge parcial nas credenciais (só o que você enviar é alterado)
-NotifyConfiguration::update('uuid', ['label' => 'Novo nome']);
-NotifyConfiguration::update('uuid', ['credentials' => ['password' => 'nova-senha']]);
-NotifyConfiguration::update('uuid', ['active' => false]);
-
-// Definir como padrão do canal
-NotifyConfiguration::setDefault('uuid');
-
-// Remover
-NotifyConfiguration::delete('uuid');
-```
-
-### Usar uma config específica no envio
-
-Quando você quer usar uma config diferente da padrão em um envio pontual, passe o `configId`:
-
-```php
-// Notificação individual
-public function toNotifySms($notifiable): NotifySms
-{
-    return (new NotifySms)
-        ->to($notifiable->phone)
-        ->content('Mensagem pelo remetente secundário.')
-        ->configId('uuid-da-config-alternativa'); // sobrescreve o is_default
-}
-
-// Campanha
-NotifyCampaignBuilder::sms()
-    ->name('Campanha com config específica')
-    ->content('Olá {{name}}!')
-    ->contacts([...])
-    ->configId('uuid-da-config-alternativa')
-    ->send();
-```
-
----
-
-## Rastreamento automático
-
-Cada envio — notificação individual ou campanha — é registrado automaticamente no banco. Nenhuma alteração é necessária nas suas classes de notificação.
-
-**Tabelas criadas pelas migrations:**
-
-| Tabela | Descrição |
-|---|---|
-| `notify_logs` | Um registro por envio individual. Armazena canal, status, payload, resposta do servidor |
-| `notify_campaigns` | Uma linha por campanha disparada |
-| `notify_campaign_contacts` | Um registro por contato de campanha |
-
-**Ciclo de status — `notify_logs`:**
-
-| Status | Momento |
-|---|---|
-| `sending` | Antes da chamada HTTP ao servidor |
-| `sent` | Servidor aceitou com HTTP 200 |
-| `delivered` | Webhook do servidor confirmou entrega |
-| `error` | Falha no envio ou rejeição pelo provedor |
-
-**Ciclo de status — `notify_campaigns`:**
-
-| Status | Momento |
-|---|---|
-| `pending` | Campanha criada localmente, aguardando aceite |
-| `processing` | Servidor aceitou e está processando os jobs |
-| `paused` | Pausada no servidor |
-| `completed` | Todos os contatos processados |
-| `failed` | Falha geral |
-| `cancelled` | Cancelada via DELETE no servidor |
+- **Tempo real / sob demanda** → consulte o servidor com `NotifyQuery::server()` (ver abaixo).
+- **Push do servidor** → receba os callbacks no [webhook](#webhook-receiver), que são
+  repassados como **eventos Laravel** (`NotifyWebhookEvent` / `NotifyCampaignWebhookEvent`).
+  Persista o que quiser no seu próprio banco a partir do listener.
 
 ---
 
 ## Webhook receiver
 
-O package inclui `NotifyWebhookController` que recebe os callbacks do servidor e atualiza o banco local automaticamente.
+O package inclui `NotifyWebhookController` que recebe os callbacks do servidor e os
+**repassa como eventos Laravel** — ele não grava nada. Escute os eventos para reagir.
 
-**Payload esperado — notificação individual:**
+**Notificação individual** → dispara `NotifyWebhookEvent`. Payload típico recebido:
 ```json
 {
+    "event": "sent",
     "notification_id": "uuid-do-servidor",
-    "status": "delivered",
-    "delivered_at": "2026-03-12 10:30:00"
+    "provider_id": "11",
+    "status": "send",
+    "type": "telegram"
 }
 ```
 
-**Payload esperado — campanha:**
+**Campanha** → dispara `NotifyCampaignWebhookEvent`. Payload típico:
 ```json
 {
     "campaign_id": "uuid-da-campanha-no-servidor",
@@ -916,11 +1882,27 @@ O package inclui `NotifyWebhookController` que recebe os callbacks do servidor e
     "total": 1000,
     "sent": 450,
     "failed": 12,
-    "started_at": "2026-03-12 09:00:00",
     "contact_updates": [
-        { "contact": "joao@email.com", "status": "sent", "sent_at": "2026-03-12 09:01:00" },
+        { "contact": "joao@email.com", "status": "sent" },
         { "contact": "erro@email.com", "status": "failed", "error": "Mailbox full" }
     ]
+}
+```
+
+Exemplo de listener:
+```php
+use RiseTechApps\Notify\Events\NotifyWebhookEvent;
+
+public function handle(NotifyWebhookEvent $event): void
+{
+    // $event->event, $event->notificationId, $event->providerId,
+    // $event->status, $event->type, $event->payload (array cru completo)
+
+    match ($event->status) {
+        'delivered' => /* ... */ null,
+        'error'     => /* ... */ null,
+        default     => null,
+    };
 }
 ```
 
@@ -928,46 +1910,303 @@ O package inclui `NotifyWebhookController` que recebe os callbacks do servidor e
 
 ## Consultas de status
 
-A classe `NotifyQuery` oferece dois modos: **banco local** (sem HTTP, instantâneo) e **servidor** (tempo real via API).
+Todas as consultas vão ao servidor (HTTP com a `NOTIFY_SERVICE_KEY`), via `NotifyQuery::server()`.
 
-### Consultas locais
+### SMS (endpoints dedicados)
 
 ```php
 use RiseTechApps\Notify\NotifyQuery;
 
-// ── Notificações ─────────────────────────────────────────────────────────────
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->sms()
+    ->tag('promo')                 // ou ->tag(['promo', 'junho']) — contém qualquer uma
+    ->status('delivered')          // created|sending|send|delivered|error|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
 
-// Todos os logs — retorna Eloquent Builder, use ->get(), ->paginate(), etc.
-NotifyQuery::logs()->latest()->paginate(25);
+$result['data'];          // array de SMS
+$result['total'];         // total, current_page, last_page, per_page
 
-// Com filtros
-NotifyQuery::logs()->where('channel', 'sms')->where('status', 'error')->get();
+// Detalhe + timeline de eventos
+$sms = NotifyQuery::server()->sms('server-uuid')->get();
+$sms['status'];           // status atual
+$sms['events'];           // timeline: created → sending → send → delivered
 
-// Logs de um model específico (User, Authentication, etc.)
-NotifyQuery::logsFor($user)->latest()->get();
-NotifyQuery::logsFor($user)->where('channel', 'email')->get();
-
-// Buscar pelo ID retornado pelo servidor (útil no webhook)
-NotifyQuery::findLog('server-notification-uuid');
-
-// ── Campanhas ─────────────────────────────────────────────────────────────────
-
-NotifyQuery::campaigns()->where('channel', 'sms')->latest()->get();
-NotifyQuery::campaigns()->where('status', 'completed')->paginate(10);
-
-// Buscar pelo ID do servidor
-NotifyQuery::findCampaign('server-campaign-uuid');
-
-// Contatos de uma campanha
-NotifyQuery::campaignContacts('local-campaign-uuid')->where('status', 'failed')->get();
-NotifyQuery::campaignContacts('local-campaign-uuid')->where('status', 'pending')->count();
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->sms('server-uuid')->cancel();
+// ->sms()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
 ```
 
----
+> Atenção ao filtro de tag: conforme o contrato do servidor, **sem informar `tag` a
+> listagem retorna apenas os SMS SEM tag**. Informe `->tag(...)` para trazer os que
+> contêm a(s) tag(s) desejada(s).
 
-### Consultas no servidor
+### Email (endpoints dedicados)
 
-Consultas em tempo real via API do servidor (faz requisição HTTP com a `NOTIFY_SERVICE_KEY`).
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->mail()
+    ->tag('pedido')                // ou ->tag(['pedido', 'transacional']) — contém qualquer uma
+    ->status('delivered')          // created|sending|sent|delivered|ready|error|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$mail = NotifyQuery::server()->mail('server-uuid')->get();
+$mail['events'];          // timeline: created → sending → sent → delivered/ready/error
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->mail('server-uuid')->cancel();
+// ->mail()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'notification_id' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/finalizado (veja current_status) · 404 = não é seu/inexistente
+```
+
+> Mesmo comportamento do SMS no filtro de tag: **sem `tag()` a listagem traz só os
+> e-mails SEM tag**. Informe `->tag(...)` para trazer os que contêm a(s) tag(s).
+
+### Push (endpoints dedicados)
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->push()
+    ->tag('promo')                 // string única (no push a tag não é array)
+    ->status('sent')               // created|sending|sent|error|failed|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$push = NotifyQuery::server()->push('server-uuid')->get();
+$push['events'];          // timeline: created → sending → sent · error · failed
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->push('server-uuid')->cancel();
+// ->push()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
+```
+
+> Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
+> push SEM tag**.
+
+### APNS (endpoints dedicados)
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->apns()
+    ->tag('entregas')              // ou ->tag(['entregas', 'junho'])
+    ->status('sent')               // created|sending|sent|error|failed|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$apns = NotifyQuery::server()->apns('server-uuid')->get();
+$apns['events'];          // timeline: created → sending → sent · error · failed
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->apns('server-uuid')->cancel();
+// ->apns()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
+```
+
+> Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
+> envios SEM tag**.
+
+### Telegram (endpoints dedicados)
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->telegram()
+    ->tag('pedidos')               // ou ->tag(['pedidos', 'junho'])
+    ->status('sent')               // created|sending|sent|error|failed|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$msg = NotifyQuery::server()->telegram('server-uuid')->get();
+$msg['events'];           // timeline: created → sending → sent · error · failed
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->telegram('server-uuid')->cancel();
+// ->telegram()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
+
+// Editar / apagar / fixar uma mensagem já enviada (síncrono, só o notification_id)
+NotifyQuery::server()->telegram('server-uuid')->edit('Texto editado');
+NotifyQuery::server()->telegram('server-uuid')->editCaption('Nova legenda');
+NotifyQuery::server()->telegram('server-uuid')->delete();
+NotifyQuery::server()->telegram('server-uuid')->pin(disableNotification: true);
+// ['status' => bool, 'message' => string|null, 'http' => int]
+```
+
+> Mais detalhes em [Telegram → Gerenciar mensagens enviadas](#gerenciar-mensagens-enviadas).
+
+> Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
+> envios SEM tag**.
+
+### Slack (endpoints dedicados)
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->slack()
+    ->tag('deploys')               // ou ->tag(['deploys', 'junho'])
+    ->status('sent')               // created|sending|sent|error|failed|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$slack = NotifyQuery::server()->slack('server-uuid')->get();
+$slack['events'];         // timeline: created → sending → sent · error · failed
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->slack('server-uuid')->cancel();
+// ->slack()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
+
+// Editar / apagar uma mensagem já enviada (síncrono, só Bot Token)
+NotifyQuery::server()->slack('server-uuid')->edit('Texto editado ✅');
+NotifyQuery::server()->slack('server-uuid')->delete();
+// ['status' => bool, 'message' => string|null, 'http' => int]
+```
+
+> Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
+> envios SEM tag**.
+
+### Discord (endpoints dedicados)
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->discord()
+    ->tag('cadastros')             // ou ->tag(['cadastros', 'junho'])
+    ->status('sent')               // created|sending|sent|error|failed|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$discord = NotifyQuery::server()->discord('server-uuid')->get();
+$discord['events'];       // timeline: created → sending → sent · error · failed
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->discord('server-uuid')->cancel();
+// ->discord()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
+
+// Editar / apagar uma mensagem já enviada (síncrono)
+NotifyQuery::server()->discord('server-uuid')->edit('Incidente resolvido ✅');
+NotifyQuery::server()->discord('server-uuid')->delete();
+// ['status' => bool, 'message' => string|null, 'http' => int]
+```
+
+> Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
+> envios SEM tag**.
+
+### Teams (endpoints dedicados)
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->teams()
+    ->tag('relatorios')            // ou ->tag(['relatorios', 'junho'])
+    ->status('sent')               // created|sending|sent|error|failed|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$teams = NotifyQuery::server()->teams('server-uuid')->get();
+$teams['events'];         // timeline: created → sending → sent · error · failed
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->teams('server-uuid')->cancel();
+// ->teams()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
+```
+
+> Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
+> envios SEM tag**.
+
+### WebSocket (endpoints dedicados)
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->websocket()
+    ->tag('pedidos')               // ou ->tag(['pedidos', 'junho'])
+    ->status('sent')               // created|sending|sent|error|failed|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$ws = NotifyQuery::server()->websocket('server-uuid')->get();
+$ws['events'];            // timeline: created → sending → sent · error · failed
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->websocket('server-uuid')->cancel();
+// ->websocket()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
+```
+
+> Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
+> envios SEM tag**.
+
+### Webhook (endpoints dedicados)
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar (filtra por tag/status) — retorna o paginador do servidor
+$result = NotifyQuery::server()->webhook()
+    ->tag('erp')                   // ou ->tag(['erp', 'junho'])
+    ->status('sent')               // created|sending|sent|error|cancelled
+    ->perPage(50)                  // 1–100, default 20
+    ->page(1)
+    ->get();
+
+// Detalhe + timeline de eventos
+$wh = NotifyQuery::server()->webhook('server-uuid')->get();
+$wh['events'];            // timeline: created → sending → sent (metadata.status_code) · error
+
+// Cancelar — só funciona enquanto o status for `created` (ainda na fila)
+$res = NotifyQuery::server()->webhook('server-uuid')->cancel();
+// ->webhook()->cancel('server-uuid') também funciona
+// ['status' => bool, 'message' => string|null, 'notification_id' => string|null, 'current_status' => string|null, 'http' => int]
+// http 200 = cancelado · 409 = já enviando/enviado (veja current_status) · 404 = não é seu/inexistente
+```
+
+> Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
+> envios SEM tag**.
+
+### Notificações (genérico, todos os canais)
 
 ```php
 use RiseTechApps\Notify\NotifyQuery;
@@ -998,132 +2237,63 @@ $events['current_status']; // status atual
 $events['events'];         // array de eventos com timestamps
 
 // ── Campanhas ─────────────────────────────────────────────────────────────────
+// Endpoints por canal: /api/v1/send/campaigns/{sms|mail}. Informe o canal no 1º arg.
 
 // Listar campanhas
-$result = NotifyQuery::server()->campaigns()
-    ->channel('email')              // sms|email
+$result = NotifyQuery::server()->campaigns('mail')   // 'sms' | 'mail' (email vira mail)
     ->status('completed')           // pending|processing|paused|completed|failed|cancelled
+    ->tag('newsletter')             // opcional
     ->from('2026-01-01')
     ->to('2026-03-31')
     ->perPage(25)
     ->get();
 
-// Detalhes + progresso de uma campanha
-$campaign = NotifyQuery::server()->campaign('server-campaign-uuid');
+// Detalhes + progresso de uma campanha (canal + id)
+$campaign = NotifyQuery::server()->campaigns('mail', 'server-campaign-uuid')->get();
 $campaign['progress_percent']; // 0 a 100
 $campaign['pending_count'];    // contatos ainda não processados
-$campaign['sent_count'];
-$campaign['failed_count'];
 
-// Contatos de uma campanha
-$result = NotifyQuery::server()->campaignContacts('server-campaign-uuid')
-    ->status('failed')              // pending|sending|sent|failed|skipped
-    ->search('joao@email.com')      // busca parcial por email ou telefone
-    ->perPage(100)                  // máx: 200, default: 50
-    ->page(1)
+// Cancelar campanha (pending/paused/processing)
+$res = NotifyQuery::server()->campaigns('sms', 'server-campaign-uuid')->cancel();
+$res['status'];          // true se cancelou
+$res['current_status'];  // status atual em caso de 409
+$res['http'];            // 200 | 409 | 404
+// Forma alternativa: ->campaigns('sms')->cancel('server-campaign-uuid')
+
+// Contatos da campanha — status e motivo da falha por destinatário (exige o id)
+$contacts = NotifyQuery::server()->campaigns('mail', 'server-campaign-uuid')->contacts()
+    ->status('failed')      // pending|sending|sent|failed|skipped (opcional)
+    ->page(1)               // opcional
     ->get();
 
-$result['campaign']; // dados resumidos da campanha
-$result['data'];     // array de contatos
-$result['meta'];     // paginação
-
-// Detalhe de um contato específico
-$contact = NotifyQuery::server()->campaignContact('campaign-uuid', 'contact-uuid');
-// Inclui notification_id — use para cruzar com ->notification()
-```
-
----
-
-## Modelos
-
-### `NotifyLog`
-
-```php
-use RiseTechApps\Notify\Models\NotifyLog;
-
-$log = NotifyLog::find('uuid');
-
-$log->channel;                // 'sms', 'email', etc.
-$log->status;                 // 'sending', 'sent', 'delivered', 'error'
-$log->server_notification_id; // UUID retornado pelo servidor
-$log->payload;                // array — o que foi enviado
-$log->server_response;        // array — resposta do servidor
-$log->sent_at;                // Carbon
-$log->delivered_at;           // Carbon
-$log->failed_at;              // Carbon
-
-// Relacionamentos
-$log->notifiable;             // model notificado (User, Authentication, etc.)
-$log->campaign;               // NotifyCampaign ou null
-
-// Métodos
-$log->markAsSent($serverId, $response);
-$log->markAsDelivered();
-$log->markAsFailed($errorMessage, $response);
-```
-
----
-
-### `NotifyCampaign`
-
-```php
-use RiseTechApps\Notify\Models\NotifyCampaign;
-
-$campaign = NotifyCampaign::find('uuid');
-
-$campaign->name;               // nome
-$campaign->channel;            // 'sms' ou 'email'
-$campaign->status;             // 'pending', 'processing', 'completed', etc.
-$campaign->server_campaign_id; // UUID no servidor
-$campaign->total_contacts;
-$campaign->sent_count;
-$campaign->failed_count;
-$campaign->progress;           // atributo computado: % concluído (0-100)
-$campaign->scheduled_at;       // Carbon ou null
-$campaign->started_at;         // Carbon ou null
-$campaign->finished_at;        // Carbon ou null
-
-// Relacionamentos
-$campaign->contacts;           // HasMany NotifyCampaignContact
-$campaign->logs;               // HasMany NotifyLog
-
-// Métodos
-$campaign->syncFromWebhook($data); // atualiza contadores via payload do webhook
-```
-
----
-
-### `NotifyCampaignContact`
-
-```php
-use RiseTechApps\Notify\Models\NotifyCampaignContact;
-
-$contact = NotifyCampaignContact::find('uuid');
-
-$contact->contact;    // email ou telefone
-$contact->name;
-$contact->status;     // 'pending', 'sent', 'failed', 'skipped'
-$contact->error;      // mensagem de erro (se failed)
-$contact->sent_at;    // Carbon
-
-// Relacionamento
-$contact->campaign;   // NotifyCampaign
+$contacts['data'];         // [['contact','name','status','error','sent_at'], ...]
+$contacts['pagination'];   // ['current_page','per_page','total','last_page']
+// Ideal para descobrir QUAIS contatos falharam e o porquê (ex.: 'Domínio sem MX').
 ```
 
 ---
 
 ## Eventos Laravel
 
-O package dispara eventos nativos do Laravel em cada etapa do envio individual:
+Como nada é persistido, **os eventos são o principal ponto de integração**. O pacote
+dispara dois grupos:
+
+**No envio** (dentro do canal, a cada notificação individual):
 
 ```php
-use RiseTechApps\Notify\Events\NotifySendingEvent;
-use RiseTechApps\Notify\Events\NotifySentEvent;
-use RiseTechApps\Notify\Events\NotifyFailedEvent;
+use RiseTechApps\Notify\Events\NotifySendingEvent;  // antes do POST ao servidor
+use RiseTechApps\Notify\Events\NotifySentEvent;     // ($notifiable, $notification, $response, $channel)
+use RiseTechApps\Notify\Events\NotifyFailedEvent;   // ($notifiable, $notification, $exception, $channel)
+```
 
-// NotifySendingEvent                                         — antes do envio HTTP
-// NotifySentEvent($notifiable, $notification, $response, $channel)  — envio bem-sucedido
-// NotifyFailedEvent($notifiable, $notification, $exception, $channel) — falha no envio
+**No webhook** (callback do servidor, sem `$notifiable`/`$notification`):
+
+```php
+use RiseTechApps\Notify\Events\NotifyWebhookEvent;
+// (event, notificationId, providerId, status, type, payload)
+
+use RiseTechApps\Notify\Events\NotifyCampaignWebhookEvent;
+// (campaignId, status, payload)
 ```
 
 Registre listeners no `EventServiceProvider`:
@@ -1133,8 +2303,11 @@ protected $listen = [
     \RiseTechApps\Notify\Events\NotifySentEvent::class => [
         App\Listeners\LogNotificacaoEnviada::class,
     ],
-    \RiseTechApps\Notify\Events\NotifyFailedEvent::class => [
-        App\Listeners\AlertarFalhaDeNotificacao::class,
+    \RiseTechApps\Notify\Events\NotifyWebhookEvent::class => [
+        App\Listeners\AtualizarStatusNotificacao::class,
+    ],
+    \RiseTechApps\Notify\Events\NotifyCampaignWebhookEvent::class => [
+        App\Listeners\AtualizarProgressoCampanha::class,
     ],
 ];
 ```
@@ -1143,94 +2316,126 @@ protected $listen = [
 
 ## Configurações de driver
 
-Gerencie as credenciais de cada canal diretamente pelo package, sem precisar acessar o painel do servidor.
-
-### Listar
+Gerencie as credenciais de cada canal pelo próprio `NotifyQuery`, sem acessar o painel
+do servidor. O ponto de entrada é **por canal**: `NotifyQuery::server()->{canal}()->config()`.
+O **driver** é informado com `->driver('twilio')` e as credenciais por setters fluentes,
+terminando em `->save()`.
 
 ```php
-use RiseTechApps\Notify\NotifyDriverConfig;
-
-NotifyDriverConfig::list();          // todas as configs
-NotifyDriverConfig::list('sms');     // filtra por canal
-NotifyDriverConfig::get('uuid');     // detalhes (chaves das credenciais, sem valores)
+use RiseTechApps\Notify\NotifyQuery;
 ```
 
-### SMS
+### Descobrir e listar
 
 ```php
+// O que dá pra cadastrar: cada canal com default_driver + credential_fields
+NotifyQuery::server()->drivers();
+
+// Configs já cadastradas (só as ativas)
+NotifyQuery::server()->configurations();          // todas
+NotifyQuery::server()->configurations('sms');     // só SMS
+
+// Pelo recurso do canal (equivalente): sem id lista, com id detalha
+NotifyQuery::server()->sms()->config()->get();          // lista as configs de SMS
+NotifyQuery::server()->sms()->config('uuid')->get();    // detalhe (metadados + credential_keys)
+```
+
+### Criar — SMS
+
+Drivers: `mobizon` (padrão), `clicksend`, `twilio`.
+
+```php
+// Mobizon (driver padrão do canal)
+NotifyQuery::server()->sms()->config()
+    ->driver('mobizon')
+    ->label('Mobizon')
+    ->key('xxxxxxxxxxxxxxxx')
+    ->apiServer('xx')          // ex.: "61" (subdomínio da API Mobizon)
+    ->asDefault()
+    ->save();
+
+// ClickSend
+NotifyQuery::server()->sms()->config()
+    ->driver('clicksend')
+    ->label('ClickSend Produção')
+    ->username('user@empresa.com')
+    ->apiKey('xxxxxxxxxxxxxxxx')
+    ->from('Empresa')
+    ->save();
+
 // Twilio
-NotifyDriverConfig::twilio('Twilio Principal')
+NotifyQuery::server()->sms()->config()
+    ->driver('twilio')
+    ->label('Twilio Principal')
     ->sid('ACxxxxxxxxxxxxxxxx')
     ->token('xxxxxxxxxxxxxxxx')
     ->from('+5511999999999')
-    ->asDefault()
-    ->save();
-
-// Zenvia
-NotifyDriverConfig::zenvia('Zenvia Prod')
-    ->apiToken('xxxxxxxxxxxxxxxx')
-    ->senderId('EMPRESA')
-    ->save();
-
-// Mobizon
-NotifyDriverConfig::mobizon('Mobizon')
-    ->key('xxxxxxxxxxxxxxxx')
     ->save();
 ```
 
-### Email
+### Criar — Email
+
+Drivers: `smtp` (padrão), `ses`, `mailgun`, `sendgrid`, `postmark`, `resend`.
 
 ```php
-// SMTP
-NotifyDriverConfig::smtp('SMTP Produção')
-    ->host('smtp.empresa.com')
-    ->port(587)
-    ->username('user@empresa.com')
-    ->password('senha')
-    ->encryption('tls')
+// SMTP — NÃO tem credenciais próprias: usa o config/mail.php da sua app
+NotifyQuery::server()->mail()->config()
+    ->driver('smtp')
+    ->label('SMTP Produção')
     ->asDefault()
     ->save();
 
-// Mailgun
-NotifyDriverConfig::mailgun('Mailgun')
+// Mailgun (domain / secret / endpoint)
+NotifyQuery::server()->mail()->config()
+    ->driver('mailgun')
+    ->label('Mailgun')
     ->domain('mg.empresa.com')
     ->secret('key-xxxxxxxxxxxxxxxx')
+    ->endpoint('api.mailgun.net')   // ou api.eu.mailgun.net
     ->save();
 
 // Resend
-NotifyDriverConfig::resend('Resend')
-    ->apiKey('re_xxxxxxxxxxxxxxxx')
-    ->save();
+NotifyQuery::server()->mail()->config()->driver('resend')->label('Resend')->apiKey('re_xxxxxxxx')->save();
 
 // SendGrid
-NotifyDriverConfig::sendgrid('SendGrid')
-    ->apiKey('SG.xxxxxxxxxxxxxxxx')
-    ->save();
+NotifyQuery::server()->mail()->config()->driver('sendgrid')->label('SendGrid')->apiKey('SG.xxxxxxxx')->save();
 
 // Amazon SES
-NotifyDriverConfig::ses('SES us-east-1')
+NotifyQuery::server()->mail()->config()
+    ->driver('ses')
+    ->label('SES us-east-1')
     ->key('AKIAXXXXXXXXXXXXXXXX')
     ->secret('xxxxxxxxxxxxxxxx')
     ->region('us-east-1')
     ->save();
 
 // Postmark
-NotifyDriverConfig::postmark('Postmark')
-    ->token('xxxxxxxxxxxxxxxx')
-    ->save();
+NotifyQuery::server()->mail()->config()->driver('postmark')->label('Postmark')->token('xxxxxxxx')->save();
 ```
 
-### Push / APNS
+### Criar — Push / APNS
 
 ```php
-// FCM (Android)
-NotifyDriverConfig::fcm('FCM Android')
-    ->projectId('meu-projeto-firebase')
-    ->credentialsFile('/path/to/service-account.json')
+// FCM — a partir do arquivo do Service Account: o client LÊ o arquivo e envia
+// o conteúdo (JSON parseado) em credentials_json (não o caminho)
+NotifyQuery::server()->push()->config()
+    ->driver('fcm')
+    ->label('FCM-PUSHER')
+    ->credentialsFile(storage_path('app/google-services.json'))
+    ->asDefault()
+    ->save();
+
+// FCM — Service Account inline (array ou string JSON), sem arquivo em disco
+NotifyQuery::server()->push()->config()
+    ->driver('fcm')
+    ->label('FCM Cliente X')
+    ->credentialsJson($serviceAccountArray)   // array OU string JSON
     ->save();
 
 // APNS (iOS)
-NotifyDriverConfig::apns('APNS iOS')
+NotifyQuery::server()->apns()->config()
+    ->driver('apns')
+    ->label('APNS iOS')
     ->keyPath('/path/to/AuthKey.p8')
     ->keyId('XXXXXXXXXX')
     ->teamId('XXXXXXXXXX')
@@ -1239,57 +2444,131 @@ NotifyDriverConfig::apns('APNS iOS')
     ->save();
 ```
 
-### Mensageiros
+### Criar — Mensageiros / WebSocket
 
 ```php
 // Telegram
-NotifyDriverConfig::telegram('Telegram Bot')
+NotifyQuery::server()->telegram()->config()
+    ->driver('telegram')
+    ->label('Telegram Bot')
     ->botToken('123456789:AAxxxxxxxxxx')
     ->save();
 
 // Slack
-NotifyDriverConfig::slack('Slack Workspace')
+NotifyQuery::server()->slack()->config()
+    ->driver('slack')
+    ->label('Slack Workspace')
     ->webhookUrl('https://hooks.slack.com/services/xxx/yyy/zzz')
     ->defaultChannel('#geral')
     ->save();
 
-// Discord
-NotifyDriverConfig::discord('Discord Server')
+// Discord (driver "webhook": webhook_url / username / avatar_url)
+NotifyQuery::server()->discord()->config()
+    ->driver('webhook')
+    ->label('Discord Server')
     ->webhookUrl('https://discord.com/api/webhooks/xxx/yyy')
     ->defaultUsername('NotifyBot')
     ->avatarUrl('https://app.com/bot-avatar.png')
     ->save();
 
-// Teams
-NotifyDriverConfig::teams('Teams Canal Engenharia')
+// Teams (driver "webhook": webhook_url / theme_color)
+NotifyQuery::server()->teams()->config()
+    ->driver('webhook')
+    ->label('Teams Canal Engenharia')
     ->webhookUrl('https://outlook.office.com/webhook/xxx')
+    ->themeColor('0078D4')
     ->save();
 
 // Pusher (WebSocket)
-NotifyDriverConfig::pusher('Pusher Produção')
+NotifyQuery::server()->websocket()->config()
+    ->driver('pusher')
+    ->label('Pusher Produção')
     ->appId('xxxxxxxx')
     ->key('xxxxxxxxxxxxxxxx')
     ->secret('xxxxxxxxxxxxxxxx')
     ->cluster('mt1')
     ->save();
+
+// Webhook (driver "generic")
+NotifyQuery::server()->webhook()->config()
+    ->driver('generic')
+    ->label('ERP Empresa')
+    ->defaultUrl('https://erp.empresa.com/api/eventos')
+    ->authType('bearer')
+    ->authToken('token-secreto')
+    ->timeout(15)
+    ->injectMetadata(true)
+    ->save();
 ```
 
-### Atualizar, definir padrão e remover
+> O `config()` está em **todos** os recursos de canal — `server()->slack()->config()` faz a
+> credencial e `server()->slack()->get()` traz o histórico, sem conflito. Use
+> `NotifyQuery::server()->drivers()` para descobrir os drivers válidos e os
+> `credential_fields` de cada canal. O `->driver()` é obrigatório ao criar.
+
+### Detalhe, atualizar, definir padrão e remover
+
+O mesmo `->save()` cria ou atualiza, conforme o `id`: **sem id** (`config()`) faz cadastro
+(POST); **com id** (`config('uuid')`) faz atualização (PUT, merge parcial das credenciais).
+Na atualização o driver não muda.
 
 ```php
-// Atualiza campos — credenciais fazem merge parcial (só o que você enviar é atualizado)
-NotifyDriverConfig::update('config-uuid', [
-    'label'       => 'Novo nome',
-    'credentials' => ['password' => 'nova-senha'],  // só atualiza a senha, o resto permanece
-    'is_default'  => true,
-]);
+// Detalhe (retorna só as chaves das credenciais, nunca os valores)
+NotifyQuery::server()->push()->config('config-uuid')->get();
 
-// Define como padrão para o canal
-NotifyDriverConfig::setDefault('config-uuid');
+// Atualizar — é o mesmo save(), só que com id. Merge parcial: só o que enviar muda.
+NotifyQuery::server()->mail()->config('config-uuid')
+    ->label('Novo nome')
+    ->password('nova-senha')   // só a senha muda; o resto permanece
+    ->asDefault()
+    ->save();
 
-// Remove
-NotifyDriverConfig::delete('config-uuid');
+// Definir como padrão do canal
+NotifyQuery::server()->sms()->config('config-uuid')->setDefault();
+
+// Remover
+NotifyQuery::server()->sms()->config('config-uuid')->delete();
 ```
+
+### Aliases de canal (Telegram e Slack)
+
+Cadastre **nomes lógicos** (ex.: `equipe`, `geral`, `help`) por configuração e, no envio,
+mande só o nome — o servidor resolve para o destino real (chat_id no Telegram; ID/`#canal`
+no Slack). Os aliases ficam **por configuração** (cada bot/workspace tem o seu mapa), e são
+gerenciados via `->config('uuid')->channels()`:
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+// Listar os aliases da config (mapa nome => destino)
+NotifyQuery::server()->telegram()->config('config-uuid')->channels()->all();
+
+// Criar / atualizar (idempotente — se o nome existir, sobrescreve)
+NotifyQuery::server()->telegram()->config('config-uuid')->channels()
+    ->set('equipe', '-1003142488245');
+
+NotifyQuery::server()->slack()->config('config-uuid')->channels()
+    ->set('equipe', 'C0BAX5KS8KE');
+
+// Remover
+NotifyQuery::server()->telegram()->config('config-uuid')->channels()->remove('equipe');
+```
+
+No **envio**, basta usar o nome no alvo — nada de guardar chat_ids/IDs de canal:
+
+```php
+// Telegram
+(new NotifyTelegram)->chatId('equipe')->message('Olá, equipe!');
+
+// Slack
+(new NotifySlack)->channel('equipe')->message('Olá, equipe!');
+```
+
+> **Fallthrough:** se o valor não for um alias cadastrado, é usado como está — continua
+> valendo passar o destino direto (`->chatId('-1003142488245')`, `->channel('C0BAX5KS8KE')`
+> ou `'#geral'`/`'@meucanal'`). Edição/exclusão de mensagem no Telegram também funciona
+> quando a mensagem foi enviada por alias (o servidor re-resolve). O `default_channel` do
+> Slack é sempre canal literal (não passa por alias).
 
 ### Usando uma config específica em um envio
 
@@ -1301,16 +2580,16 @@ public function toNotifySms($notifiable): NotifySms
 {
     return (new NotifySms)
         ->to($notifiable->phone)
-        ->content('Mensagem via Zenvia')
-        ->configId('uuid-da-config-zenvia');  // sobrescreve a config padrão
+        ->content('Mensagem via Twilio')
+        ->configId('uuid-da-config-twilio');  // sobrescreve a config padrão
 }
 
 // Campanha
 NotifyCampaignBuilder::sms()
     ->name('Promo')
-    ->content('Olá {{name}}!')
+    ->content('Olá {name}!')
     ->contacts($contacts)
-    ->configId('uuid-da-config-zenvia')       // sobrescreve a config padrão
+    ->configId('uuid-da-config-twilio')       // sobrescreve a config padrão
     ->send();
 ```
 
