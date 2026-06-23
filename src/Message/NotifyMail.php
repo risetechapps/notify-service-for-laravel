@@ -215,6 +215,10 @@ class NotifyMail
             $this->tags,
         )));
 
+        if(blank($this->name)){
+            $this->name = $this->email;
+        }
+
         return array_filter([
             'email'           => $this->email,
             'name'            => $this->name,
