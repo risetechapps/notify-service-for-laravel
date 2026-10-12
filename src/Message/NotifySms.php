@@ -2,6 +2,9 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+use RiseTechApps\Notify\Message\Concerns\HasTemplate;
+
 /**
  * Mensagem de SMS enviada ao servidor via /api/v1/send/sms.
  *
@@ -13,6 +16,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifySms
 {
+    use HasSendOptions, HasTemplate;
+
     protected string $content = '';
     protected string $to = '';
     protected array $tags = [];

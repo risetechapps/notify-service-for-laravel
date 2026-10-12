@@ -2,6 +2,8 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+
 /**
  * Evento WebSocket (tempo real) enviado ao servidor via /api/v1/send/websocket.
  *
@@ -20,6 +22,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifyWebSocket
 {
+    use HasSendOptions;
+
     protected string $channel = '';
     protected string $event = '';
     protected array $data = [];

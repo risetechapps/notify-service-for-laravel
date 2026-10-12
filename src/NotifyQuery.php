@@ -9,12 +9,6 @@ use Illuminate\Support\Facades\Http;
  *
  * O pacote não persiste nada localmente — todas as consultas vão ao servidor.
  *
- *   // Notificações
- *   NotifyQuery::server()->notifications()->channel('sms')->status('send')->get();
- *   NotifyQuery::server()->notifications()->from('2026-01-01')->to('2026-03-31')->get();
- *   NotifyQuery::server()->notification('server-uuid');           // detalhes + eventos
- *   NotifyQuery::server()->notificationEvents('server-uuid');     // só a timeline
- *
  *   // SMS
  *   NotifyQuery::server()->sms()->tag('promo')->status('delivered')->get();  // listar
  *   NotifyQuery::server()->sms('server-uuid')->get();                        // detalhe + timeline
@@ -76,38 +70,6 @@ class ServerQuery
     {
         $this->apiUrl = Notify::BASE_URL;
         $this->apiKey = config('notify.key', '');
-    }
-
-    // ── Notificações ──────────────────────────────────────────────────────────
-
-    /** Inicia query de notificações individuais no servidor. */
-    public function notifications(): ServerNotificationQuery
-    {
-        return new ServerNotificationQuery($this->apiUrl, $this->apiKey);
-    }
-
-    /**
-     * Busca detalhes + eventos de uma notificação no servidor.
-     *
-     * @param  string $serverNotificationId  UUID retornado pelo servidor no dispatch
-     * @return array{data: array, events: array}
-     */
-    public function notification(string $serverNotificationId): array
-    {
-        $response = $this->http()->get("/api/v1/notifications/{$serverNotificationId}");
-        return $response->json('data', []);
-    }
-
-    /**
-     * Busca apenas a timeline de eventos de uma notificação.
-     *
-     * @param  string $serverNotificationId
-     * @return array{current_status: string, events: array}
-     */
-    public function notificationEvents(string $serverNotificationId): array
-    {
-        $response = $this->http()->get("/api/v1/notifications/{$serverNotificationId}/events");
-        return $response->json() ?? [];
     }
 
     // ── SMS ─────────────────────────────────────────────────────────────────
@@ -180,6 +142,87 @@ class ServerQuery
         return new ServerChannelQuery($this->apiUrl, $this->apiKey, 'webhook', $id);
     }
 
+    // ── WhatsApp ────────────────────────────────────────────────────────────
+
+    /** Histórico e cancelamento dos envios de WhatsApp (e ->config() para a configuração). */
+    public function whatsapp(?string $id = null): ServerChannelQuery
+    {
+        return new ServerChannelQuery($this->apiUrl, $this->apiKey, 'whatsapp', $id);
+    }
+
+    /**
+     * Um número de WhatsApp: criar, conectar pelo QR, avisos de conexão,
+     * configurações do chat, importação do histórico e proteção do número.
+     * Sem id: create() e all().
+     */
+    public function whatsappNumber(?string $configId = null): Server\WhatsAppNumber
+    {
+        return new Server\WhatsAppNumber($configId);
+    }
+
+    /** Chat do WhatsApp: conversas, eventos (cursor/long polling) e autoatendimento. */
+    public function chat(): Server\Chat
+    {
+        return new Server\Chat();
+    }
+
+    /** Equipe: membros e atendentes do seu sistema (external_id, sem login). */
+    public function team(): Server\Team
+    {
+        return new Server\Team();
+    }
+
+    // ── Recursos da conta ───────────────────────────────────────────────────
+
+    /** Modelos de mensagem salvos (e-mail, SMS, WhatsApp). */
+    public function templates(): Server\Templates
+    {
+        return new Server\Templates();
+    }
+
+    /** Listas de contatos salvas, para as campanhas. */
+    public function contactLists(): Server\ContactLists
+    {
+        return new Server\ContactLists();
+    }
+
+    /** Números fora das campanhas (SAIR ou bloqueio manual), por canal. */
+    public function optOuts(): Server\OptOuts
+    {
+        return new Server\OptOuts();
+    }
+
+    /** Histórico das entregas de webhook, com reenvio. */
+    public function webhookDeliveries(): Server\WebhookDeliveries
+    {
+        return new Server\WebhookDeliveries();
+    }
+
+    /** Envios por canal e por dia nos últimos $days dias (1 a 90). */
+    public function usage(int $days = 30): array
+    {
+        return $this->http()->get('/api/v1/usage/channels', ['days' => $days])->json() ?? [];
+    }
+
+    /**
+     * Até 1.000 mensagens de um canal numa chamada (POST /send/batch). Cada
+     * item é o corpo do envio individual do canal; $options leva o que vale
+     * para o lote (webhook_url, tag, config_id, failover, scheduled_at).
+     * O lote entra inteiro ou não entra. Devolve os notification_ids na ordem.
+     */
+    public function batch(string $channel, array $messages, array $options = [], ?string $idempotencyKey = null): array
+    {
+        $request = $this->http();
+
+        if ($idempotencyKey !== null) {
+            $request = $request->withHeaders(['Idempotency-Key' => $idempotencyKey]);
+        }
+
+        $response = $request->post('/api/v1/send/batch', ['channel' => $channel, 'messages' => array_values($messages)] + $options);
+
+        return ($response->json() ?? []) + ($response->failed() ? ['http' => $response->status()] : []);
+    }
+
     // ── Configuração de drivers ─────────────────────────────────────────────────
 
     /**
@@ -217,7 +260,7 @@ class ServerQuery
      * Recurso de campanhas no servidor (endpoints por canal).
      * Sem id → listagem; com id → detalhe (->get()) e cancelamento (->cancel()).
      *
-     * @param  string      $channel  sms | mail (email é normalizado para mail)
+     * @param  string      $channel  sms | mail | whatsapp (email é normalizado para mail)
      * @param  string|null $id       UUID da campanha retornado ao criar
      */
     public function campaigns(string $channel, ?string $id = null): ServerCampaignQuery
@@ -236,111 +279,8 @@ class ServerQuery
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
- * Fluent builder para listar notificações no servidor.
- *
- * NotifyQuery::server()->notifications()
- *     ->channel('sms')
- *     ->status('send')
- *     ->from('2026-01-01')
- *     ->campaignId('uuid')
- *     ->perPage(50)
- *     ->get();
- */
-class ServerNotificationQuery
-{
-    protected array $params = [];
-
-    public function __construct(
-        protected string $apiUrl,
-        protected string $apiKey,
-    ) {}
-
-    public function channel(string $channel): static
-    {
-        $this->params['channel'] = $channel;
-        return $this;
-    }
-
-    /**
-     * Status: created | sending | send | delivered | ready | error
-     */
-    public function status(string $status): static
-    {
-        $this->params['status'] = $status;
-        return $this;
-    }
-
-    public function tag(string|array $tag): static
-    {
-        $this->params['tag'] = is_array($tag) ? implode(',', $tag) : $tag;
-        return $this;
-    }
-
-    public function untagged(bool $untagged = true): static
-    {
-        $this->params['untagged'] = $untagged;
-        return $this;
-    }
-
-    public function search(string $search): static
-    {
-        $this->params['search'] = $search;
-        return $this;
-    }
-
-    public function from(string $date): static
-    {
-        $this->params['from'] = $date;
-        return $this;
-    }
-
-    public function to(string $date): static
-    {
-        $this->params['to'] = $date;
-        return $this;
-    }
-
-    public function campaignId(string $campaignId): static
-    {
-        $this->params['campaign_id'] = $campaignId;
-        return $this;
-    }
-
-    public function perPage(int $perPage): static
-    {
-        $this->params['per_page'] = $perPage;
-        return $this;
-    }
-
-    public function page(int $page): static
-    {
-        $this->params['page'] = $page;
-        return $this;
-    }
-
-    /**
-     * Executa a consulta. Retorna array com 'data' e 'meta'.
-     *
-     * @return array{data: array, meta: array{total: int, per_page: int, current_page: int, last_page: int}}
-     */
-    public function get(): array
-    {
-        $response = Http::withHeaders(['X-API-KEY' => $this->apiKey])
-            ->acceptJson()
-            ->get("{$this->apiUrl}/api/v1/notifications", $this->params);
-
-        return [
-            'data' => $response->json('data', []),
-            'meta' => $response->json('meta', []),
-        ];
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-
-/**
  * Recurso de campanhas no servidor — listagem, detalhe e cancelamento.
- * O canal define o endpoint: /api/v1/send/campaigns/{sms|mail}.
+ * O canal define o endpoint: /api/v1/send/campaigns/{sms|mail|whatsapp}.
  *
  *   // Listar
  *   NotifyQuery::server()->campaigns('sms')->status('processing')->get();
@@ -359,7 +299,7 @@ class ServerCampaignQuery
 {
     protected array $params = [];
 
-    /** Segmento do endpoint por canal: sms | mail. */
+    /** Segmento do endpoint por canal: sms | mail | whatsapp. */
     protected string $segment;
 
     public function __construct(
@@ -368,7 +308,11 @@ class ServerCampaignQuery
         string $channel,
         protected ?string $id = null,
     ) {
-        $this->segment = $channel === 'sms' ? 'sms' : 'mail';
+        $this->segment = match ($channel) {
+            'sms' => 'sms',
+            'whatsapp' => 'whatsapp',
+            default => 'mail',
+        };
     }
 
     /** Filtra por tag(s) — contém qualquer uma das informadas. */
@@ -455,6 +399,29 @@ class ServerCampaignQuery
     public function contacts(): ServerCampaignContactQuery
     {
         return new ServerCampaignContactQuery($this->apiUrl, $this->apiKey, $this->segment, $this->id);
+    }
+
+    /**
+     * Relatório da campanha: contatos por estado, entregues, abertos, cliques,
+     * bounces, descadastros e o teste A/B. Exige o id.
+     */
+    public function report(): array
+    {
+        if ($this->id === null) {
+            return ['status' => false, 'message' => 'Campaign id is required.', 'http' => 0];
+        }
+
+        return $this->http()->get("/api/v1/send/campaigns/{$this->segment}/{$this->id}/report")->json() ?? [];
+    }
+
+    /** Exporta os contatos da campanha em CSV (o conteúdo do arquivo). Exige o id. */
+    public function export(): string
+    {
+        if ($this->id === null) {
+            throw new \InvalidArgumentException('Campaign id is required to export.');
+        }
+
+        return $this->http()->get("/api/v1/send/campaigns/{$this->segment}/{$this->id}/export")->body();
     }
 
     protected function http()
@@ -573,6 +540,16 @@ class ServerDriverConfig
     {
         $this->driver = $driver;
         return $this;
+    }
+
+    /**
+     * Provedor automático: usa o provedor e as credenciais da plataforma, sem
+     * credenciais suas, e acompanha se a plataforma trocar de provedor. Só nos
+     * canais com supports_auto em drivers() (o WhatsApp não tem).
+     */
+    public function auto(): static
+    {
+        return $this->driver('auto');
     }
 
     public function label(string $label): static
@@ -766,6 +743,22 @@ class ServerDriverConfig
         }
 
         return $this->http()->patch("/api/v1/configurations/{$this->id}/set-default")->json() ?? [];
+    }
+
+    /**
+     * Envia uma mensagem de teste por esta configuração (exige o id). $to:
+     * destino do teste (e-mail, telefone, token…); sem ele, o servidor usa o
+     * padrão do canal quando há.
+     */
+    public function test(?string $to = null): array
+    {
+        if ($this->id === null) {
+            return ['status' => false, 'message' => 'Config id is required.', 'http' => 0];
+        }
+
+        $response = $this->http()->post("/api/v1/configurations/{$this->id}/test", array_filter(['to' => $to]));
+
+        return ($response->json() ?? []) + ['http' => $response->status()];
     }
 
     /** Remove a configuração. DELETE /api/v1/configurations/{id}. */

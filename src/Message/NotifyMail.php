@@ -2,8 +2,13 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+use RiseTechApps\Notify\Message\Concerns\HasTemplate;
+
 class NotifyMail
 {
+    use HasSendOptions, HasTemplate;
+
     protected string $email = '';
     protected string $name = '';
     protected string $emailFrom = '';

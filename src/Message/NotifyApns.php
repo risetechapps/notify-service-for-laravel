@@ -2,6 +2,8 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+
 /**
  * Mensagem de push APNs (Apple) enviada ao servidor via /api/v1/send/apns.
  *
@@ -34,6 +36,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifyApns
 {
+    use HasSendOptions;
+
     public string|array $token = '';
     protected ?string $title = null;
     protected ?string $body = null;

@@ -61,8 +61,13 @@ class NotifyCampaignBuilder
     protected ?string $webhookUrl = null;
     protected int $ratePerMinute = 60;
     protected ?string $scheduledAt = null;
-    protected ?array $credentials = null;
     protected string|array|null $tag = null;
+    protected ?string $listId = null;
+    protected ?string $templateId = null;
+    protected ?array $sendWindow = null;
+    protected ?array $abTest = null;
+    protected ?string $idempotencyKey = null;
+    protected bool $testMode = false;
 
     // Contatos resolvidos (array final)
     protected array $contacts = [];
@@ -75,6 +80,15 @@ class NotifyCampaignBuilder
 
     // Template SMS
     protected string $smsContent = '';
+
+    // Template WhatsApp (o texto é o mesmo content() do SMS)
+    protected ?string $mediaUrl = null;
+    protected ?string $mediaPath = null;
+    protected ?string $mediaLocalFile = null;
+    protected ?string $mediaType = null;
+    protected ?string $mediaFileName = null;
+    protected bool $optOutFooter = true;
+    protected ?string $optOutText = null;
 
     // Template Email
     protected string $emailSubject = '';
@@ -103,6 +117,19 @@ class NotifyCampaignBuilder
     {
         $instance = new static();
         $instance->channel = 'email';
+        return $instance;
+    }
+
+    /**
+     * Campanha pelo número de WhatsApp da conta. O ritmo é o da proteção do
+     * número (sem ratePerMinute): quem já conversou sai primeiro e os contatos
+     * novos se distribuem pelos dias; a resposta traz `estimate` (dias).
+     * O texto aceita {name}, campos extras e variações {Olá|Oi}.
+     */
+    public static function whatsapp(): static
+    {
+        $instance = new static();
+        $instance->channel = 'whatsapp';
         return $instance;
     }
 
@@ -138,17 +165,59 @@ class NotifyCampaignBuilder
         return $this;
     }
 
-    /**
-     * Credenciais inline para este envio — sobrescreve a config padrão do servidor.
-     * Use NotifyCredentials para montar o array correto para cada driver.
-     *
-     * Exemplo:
-     *   ->credentials(NotifyCredentials::twilio('SID', 'TOKEN', '+15551234567'))
-     *   ->credentials(NotifyCredentials::resend('re_xxxxxxxxxxxx'))
-     */
-    public function credentials(array $credentials): static
+    /** Lista de contatos salva no servidor, no lugar de contacts()/fromQuery(). */
+    public function listId(string $listId): static
     {
-        $this->credentials = $credentials;
+        $this->listId = $listId;
+        return $this;
+    }
+
+    /**
+     * Modelo salvo (id ou nome). O conteúdo vem dele; o que você definir no
+     * builder tem prioridade.
+     */
+    public function template(string $idOrName): static
+    {
+        $this->templateId = $idOrName;
+        return $this;
+    }
+
+    /**
+     * Horário permitido: fora dele a campanha pausa e retoma na abertura
+     * seguinte. $days: 1 (segunda) a 7 (domingo).
+     */
+    public function sendWindow(string $start, string $end, array $days = [1, 2, 3, 4, 5, 6, 7], ?string $timezone = null): static
+    {
+        $this->sendWindow = array_filter([
+            'start' => $start,
+            'end' => $end,
+            'days' => array_values($days),
+            'timezone' => $timezone ?? config('app.timezone'),
+        ], fn ($v) => $v !== null);
+        return $this;
+    }
+
+    /**
+     * Teste A/B de assunto (e-mail): $samplePercent% recebe A ou B; depois de
+     * $waitMinutes, o resto recebe o assunto com mais aberturas.
+     */
+    public function abTest(string $subjectB, int $samplePercent = 20, int $waitMinutes = 240): static
+    {
+        $this->abTest = ['subject_b' => $subjectB, 'sample_percent' => $samplePercent, 'wait_minutes' => $waitMinutes];
+        return $this;
+    }
+
+    /** Repetir a criação com a mesma chave (em 24 h) devolve a resposta original, sem duplicar. */
+    public function idempotencyKey(string $key): static
+    {
+        $this->idempotencyKey = $key;
+        return $this;
+    }
+
+    /** Modo de teste: a campanha roda, mas nada sai pelo provedor e a cota não é consumida. */
+    public function test(bool $test = true): static
+    {
+        $this->testMode = $test;
         return $this;
     }
 
@@ -165,11 +234,12 @@ class NotifyCampaignBuilder
     // ── Fontes de contatos ────────────────────────────────────────────────────
 
     /**
-     * Retorna a chave correta do contato conforme o canal: 'phone' (sms) ou 'email' (email).
+     * Chave do contato que o servidor espera: 'email' no e-mail, 'phone' no
+     * SMS e no WhatsApp.
      */
     protected function contactKey(): string
     {
-        return $this->channel === 'sms' ? 'phone' : 'contact';
+        return $this->channel === 'email' ? 'email' : 'phone';
     }
 
     /**
@@ -283,6 +353,49 @@ class NotifyCampaignBuilder
         return $this;
     }
 
+    // ── Campos de WhatsApp ────────────────────────────────────────────────────
+
+    /**
+     * Mídia por URL pública. $type: image | video | document | audio. O texto
+     * de content() vira a legenda.
+     */
+    public function media(string $url, string $type, ?string $fileName = null): static
+    {
+        $this->mediaUrl = $url;
+        $this->mediaType = $type;
+        $this->mediaFileName = $fileName;
+        $this->mediaLocalFile = null;
+        $this->mediaPath = null;
+        return $this;
+    }
+
+    /**
+     * Mídia de um arquivo local: enviada ao servidor no send() (vídeo fora de
+     * MP4 já é convertido lá). O tipo vem do arquivo.
+     */
+    public function mediaFile(string $path, ?string $fileName = null): static
+    {
+        if (!is_readable($path)) {
+            throw new \InvalidArgumentException("Arquivo não encontrado ou sem leitura: {$path}");
+        }
+
+        $this->mediaLocalFile = $path;
+        $this->mediaFileName = $fileName ?? basename($path);
+        $this->mediaUrl = null;
+        return $this;
+    }
+
+    /**
+     * Rodapé de descadastro ("Para não receber mais mensagens, responda SAIR.").
+     * Ligado por padrão; $text troca o texto.
+     */
+    public function optOutFooter(bool $enabled = true, ?string $text = null): static
+    {
+        $this->optOutFooter = $enabled;
+        $this->optOutText = $text;
+        return $this;
+    }
+
     // ── Campos de Email ───────────────────────────────────────────────────────
 
     public function subject(string $subject): static
@@ -360,8 +473,8 @@ class NotifyCampaignBuilder
         $template   = $this->buildTemplate();
         $webhookUrl = $this->webhookUrl ?: config('notify.webhook');
 
-        if (empty($contacts)) {
-            throw new \InvalidArgumentException('At least one contact is required.');
+        if (empty($contacts) && $this->listId === null) {
+            throw new \InvalidArgumentException('At least one contact (or listId()) is required.');
         }
 
         return $this->dispatch($this->buildPayload($contacts, $template, $webhookUrl));
@@ -384,8 +497,8 @@ class NotifyCampaignBuilder
         $template   = $this->buildTemplateHtml($path);
         $webhookUrl = $this->webhookUrl ?: config('notify.webhook');
 
-        if (empty($contacts)) {
-            throw new \InvalidArgumentException('At least one contact is required.');
+        if (empty($contacts) && $this->listId === null) {
+            throw new \InvalidArgumentException('At least one contact (or listId()) is required.');
         }
 
         return $this->dispatch($this->buildPayload($contacts, $template, $webhookUrl));
@@ -397,8 +510,17 @@ class NotifyCampaignBuilder
             throw new \InvalidArgumentException('Campaign name is required.');
         }
 
+        // Com modelo salvo, o conteúdo pode vir dele.
+        if ($this->templateId !== null) {
+            return;
+        }
+
         if ($this->channel === 'sms' && $this->smsContent === '') {
             throw new \InvalidArgumentException('SMS content is required.');
+        }
+
+        if ($this->channel === 'whatsapp' && $this->smsContent === '' && !$this->mediaUrl && !$this->mediaLocalFile) {
+            throw new \InvalidArgumentException('WhatsApp content or media is required.');
         }
 
         if ($this->channel === 'email' && $this->emailSubject === '') {
@@ -412,11 +534,7 @@ class NotifyCampaignBuilder
     protected function dispatch(array $payload): array
     {
         try {
-            $endpoint = $this->channel === 'sms' ? 'sms' : 'mail';
-
-            $response = Http::withHeaders(['X-API-KEY' => config('notify.key')])
-                ->acceptJson()
-                ->post(Notify::BASE_URL . "/api/v1/send/campaigns/{$endpoint}", $payload);
+            $response = $this->http()->post(Notify::BASE_URL . "/api/v1/send/campaigns/{$this->endpoint()}", $payload);
 
             if ($response->failed()) {
                 return $response->json() ?: ['error' => $response->body()];
@@ -431,6 +549,44 @@ class NotifyCampaignBuilder
     }
 
     // ── Internos ──────────────────────────────────────────────────────────────
+
+    protected function endpoint(): string
+    {
+        return match ($this->channel) {
+            'sms' => 'sms',
+            'whatsapp' => 'whatsapp',
+            default => 'mail',
+        };
+    }
+
+    protected function http(): \Illuminate\Http\Client\PendingRequest
+    {
+        return Http::withHeaders(array_filter([
+            'X-API-KEY' => config('notify.key'),
+            'Idempotency-Key' => $this->idempotencyKey,
+            'X-Notify-Test' => $this->testMode ? 'true' : null,
+        ]))->acceptJson();
+    }
+
+    /** Envia o arquivo local da mídia (mediaFile) e guarda o path devolvido. */
+    protected function uploadMedia(): void
+    {
+        if ($this->mediaLocalFile === null || $this->mediaPath !== null) {
+            return;
+        }
+
+        $response = $this->http()
+            ->attach('file', file_get_contents($this->mediaLocalFile), $this->mediaFileName ?? basename($this->mediaLocalFile))
+            ->post(Notify::BASE_URL . '/api/v1/send/campaigns/whatsapp/media');
+
+        if ($response->failed() || !$response->json('data.path')) {
+            throw new \RuntimeException('Não foi possível enviar a mídia da campanha: ' . ($response->json('message') ?? $response->body()));
+        }
+
+        $this->mediaPath = $response->json('data.path');
+        $this->mediaType = $response->json('data.media_type') ?? $response->json('data.type');
+        $this->mediaFileName = $response->json('data.file_name') ?? $this->mediaFileName;
+    }
 
     protected function resolveContacts(): array
     {
@@ -467,6 +623,20 @@ class NotifyCampaignBuilder
 
     protected function buildTemplate(): array
     {
+        if ($this->channel === 'whatsapp') {
+            $this->uploadMedia();
+
+            return array_filter([
+                'content' => $this->smsContent !== '' ? $this->smsContent : null,
+                'media_url' => $this->mediaUrl,
+                'media_path' => $this->mediaPath,
+                'media_type' => $this->mediaType,
+                'file_name' => $this->mediaFileName,
+                'opt_out_footer' => $this->optOutFooter,
+                'opt_out_text' => $this->optOutText,
+            ], fn($v) => !is_null($v));
+        }
+
         if ($this->channel === 'sms') {
             return array_filter([
                 'content' => $this->smsContent,
@@ -504,17 +674,22 @@ class NotifyCampaignBuilder
         ], fn($v) => !is_null($v));
     }
 
-    protected function buildPayload(array $contacts, array $template, string $webhookUrl): array
+    protected function buildPayload(array $contacts, array $template, ?string $webhookUrl): array
     {
         return array_filter([
             'name' => $this->name,
             'template' => $template,
-            'contacts' => $contacts,
+            'template_id' => $this->templateId,
+            // Lista salva no lugar dos contatos (o servidor não aceita os dois).
+            'contacts' => $this->listId ? null : $contacts,
+            'list_id' => $this->listId,
             'config_id' => $this->configId,
-            'credentials' => $this->credentials,
             'webhook_url' => $webhookUrl,
-            'rate_per_minute' => $this->ratePerMinute !== 60 ? $this->ratePerMinute : null,
+            // WhatsApp segue o ritmo do número, sem rate_per_minute.
+            'rate_per_minute' => $this->channel !== 'whatsapp' && $this->ratePerMinute !== 60 ? $this->ratePerMinute : null,
             'scheduled_at' => $this->buildScheduledAt(),
+            'send_window' => $this->sendWindow,
+            'ab_test' => $this->channel === 'email' ? $this->abTest : null,
             'tag' => $this->tag,
         ], fn($v) => !is_null($v));
     }

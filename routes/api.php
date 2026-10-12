@@ -16,7 +16,10 @@ use RiseTechApps\Notify\Http\Controllers\NotifyWebhookController;
  *       ->middleware('notify.signature');
  *   Route::post('/notify/webhook/campaign', [NotifyWebhookController::class, 'campaign'])
  *       ->middleware('notify.signature');
+ *   Route::post('/notify/webhook/whatsapp', [NotifyWebhookController::class, 'whatsapp'])
+ *       ->middleware('notify.signature');
  */
 
 Route::post('webhook',          [NotifyWebhookController::class, 'notification'])->name('notify.webhook.notification');
 Route::post('webhook/campaign', [NotifyWebhookController::class, 'campaign'])->name('notify.webhook.campaign');
+Route::post('webhook/whatsapp', [NotifyWebhookController::class, 'whatsapp'])->name('notify.webhook.whatsapp');

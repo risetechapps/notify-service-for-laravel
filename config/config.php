@@ -127,6 +127,15 @@ return [
         'tags' => [],
     ],
 
+    'whatsapp' => [
+        // config_id default (UUID ou label do número conectado). Sobrescrito pelo
+        // ->configId() da mensagem. null = o número padrão da conta no servidor.
+        'config_id' => env('NOTIFY_WHATSAPP_CONFIG_ID'),
+
+        // Tags aplicadas a todo envio de WhatsApp, mescladas com as da mensagem.
+        'tags' => [],
+    ],
+
     'websocket' => [
         // config_id default (UUID ou label da credencial WebSocket — ex.: Pusher).
         // Sobrescrito pelo ->configId() da notificação. null = config default do servidor.

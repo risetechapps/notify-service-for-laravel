@@ -38,6 +38,7 @@ class NotifyServiceProvider extends ServiceProvider
         Notification::extend('notify.teams',     fn() => new Channel\NotifyChannelTeams());
         Notification::extend('notify.websocket', fn() => new Channel\NotifyChannelWebSocket());
         Notification::extend('notify.webhook',   fn() => new Channel\NotifyChannelWebhook());
+        Notification::extend('notify.whatsapp',  fn() => new Channel\NotifyChannelWhatsApp());
     }
 
     protected function registerRoutes(): void
@@ -69,6 +70,8 @@ class NotifyServiceProvider extends ServiceProvider
     {
         // O pacote não persiste nada localmente — não há migrations a carregar.
         if ($this->app->runningInConsole()) {
+            $this->commands([Console\WhatsAppEventsCommand::class]);
+
             $this->publishes([
                 __DIR__ . '/../config/config.php' => config_path('notify.php'),
             ], 'config');

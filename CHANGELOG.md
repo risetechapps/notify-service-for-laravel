@@ -4,6 +4,37 @@ Todas as mudanças notáveis para o pacote `risetechapps/notify-service-for-lara
 
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), e este projeto adere ao [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-10-12
+
+Alinhado ao notify-server 2.0.0.
+
+### Adicionado
+
+- **Canal WhatsApp** (`notify.whatsapp`): `NotifyWhatsApp` com texto, mídia por URL (`image`, `video`, `audio`, `document`), enquete, tag, `configId` e `webhookUrl`. Número pelo `routeNotificationForWhatsapp()`; defaults em `notify.whatsapp` (`config_id`, `tags`).
+- **Opções de envio em todas as mensagens** (`HasSendOptions`): `scheduledAt()`, `failover()`, `idempotencyKey()` (cabeçalho `Idempotency-Key`) e `test()` (cabeçalho `X-Notify-Test`). `NotifySms` e `NotifyMail` ganham `template($idOuNome, $variaveis)`.
+- **Números de WhatsApp**: `NotifyQuery::server()->whatsappNumber($id)` com `create()`, `all()`, `state()` (QR code), `logout()`, `alerts()`, `chatSettings()`, `importHistory()`, `protection()` e `resumeProtection()`.
+- **Chat do WhatsApp**: `NotifyQuery::server()->chat()` com números, conversas (filtros e paginação), mensagens, respostas (texto, arquivo, enquete), `handoff`, `assign`, `close`, `reopen`, `rename`, `start()` e fluxos do bot (`botFlows()`). `as($externalId, $nome)` age como atendente do seu sistema (`X-Agent-Id`/`X-Agent-Name`); `asMember($id)` como membro da equipe.
+- **Equipe**: `NotifyQuery::server()->team()` com `members()`, `syncAgent()`, `updateAgent()` e `removeAgent()`.
+- **Eventos do WhatsApp**: `NotifyWhatsAppEvent` (com `type()`, `is()`, `conversation()`, `message()`, `changes()`), entregue uma vez por `event_id` pelo webhook (`POST {prefix}/webhook/whatsapp`) ou pelo comando `notify:whatsapp-events` (long polling em `GET /chat/events`, com o cursor no cache).
+- **Campanhas de WhatsApp**: `NotifyCampaignBuilder::whatsapp()` com `media()`, `mediaFile()` (envio do arquivo local), `optOutFooter()` e o ritmo da proteção do número.
+- **Opções das campanhas**: `listId()`, `template()`, `sendWindow()`, `abTest()` (e-mail), `idempotencyKey()` e `test()`. Consultas ganham `report()` e `export()` (CSV); o segmento aceita `whatsapp`.
+- **Recursos da conta**: `templates()`, `contactLists()`, `optOuts()`, `webhookDeliveries()`, `usage($dias)` e `batch($canal, $mensagens)` (até 1.000 por chamada).
+- **Configurações de driver**: `auto()` (provedor automático da plataforma) e `test($to)`.
+
+### Corrigido
+
+- Os contatos das campanhas de e-mail iam com a chave `contact`; o servidor exige `email`.
+- `NotifyCampaignBuilder` quebrava (`TypeError`) quando `notify.webhook` não estava configurado.
+
+### Removido (breaking)
+
+- `NotifyQuery::server()->notifications()`, `notification()` e `notificationEvents()` (e `ServerNotificationQuery`): chamavam `/api/v1/notifications`, que o servidor não tem. Use as consultas por canal (`->sms()`, `->whatsapp()`, …).
+- `NotifyCampaignBuilder::credentials()` e a classe `NotifyCredentials`: o servidor não aceita credenciais no disparo. Salve a configuração (`->{canal}()->config()`) e use `configId()`.
+
+### Interno
+
+- Os 10 canais passam por `NotifyChannel::deliver()` (eventos, log, webhook padrão e cabeçalhos num só lugar).
+
 ## [1.3.1] - 2026-08-24
 
 - Removido logs Obsoletos

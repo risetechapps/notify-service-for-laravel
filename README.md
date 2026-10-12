@@ -24,12 +24,16 @@ Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **
   - [Teams](#teams)
   - [WebSocket](#websocket)
   - [Webhook](#webhook)
+  - [WhatsApp](#whatsapp)
+  - [Opções de envio (todos os canais)](#opções-de-envio-todos-os-canais)
 - [Envio multicanal](#envio-multicanal)
+- [Envio em lote](#envio-em-lote)
 - [Credenciais por driver](#credenciais-por-driver)
-  - [Credenciais inline](#credenciais-inline)
 - [Campanhas em massa](#campanhas-em-massa)
   - [Campanha SMS](#campanha-sms)
   - [Campanha Email](#campanha-email)
+  - [Campanha WhatsApp](#campanha-whatsapp)
+  - [Opções comuns das campanhas](#opções-comuns-das-campanhas)
   - [Template HTML próprio](#template-html-próprio)
   - [Validações antes do disparo](#validações-antes-do-disparo)
   - [Fontes de contatos](#fontes-de-contatos)
@@ -37,6 +41,12 @@ Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **
 - [Webhook receiver](#webhook-receiver)
 - [Consultas de status](#consultas-de-status)
 - [Eventos Laravel](#eventos-laravel)
+- [WhatsApp: números, chat e equipe](#whatsapp-números-chat-e-equipe)
+  - [Números](#números)
+  - [Chat](#chat)
+  - [Equipe e atendentes do seu sistema](#equipe-e-atendentes-do-seu-sistema)
+  - [Eventos do WhatsApp (webhook e cursor)](#eventos-do-whatsapp-webhook-e-cursor)
+- [Recursos da conta](#recursos-da-conta)
 - [Configurações de driver](#configurações-de-driver)
 
 ---
@@ -74,6 +84,9 @@ NOTIFY_SERVICE_WEBHOOK_SECRET=seu-segredo
 # Rotas automáticas de webhook (opcional)
 NOTIFY_SERVICE_ROUTES=true
 NOTIFY_SERVICE_ROUTES_PREFIX=notify
+
+# Número de WhatsApp padrão (id ou label da configuração; opcional)
+NOTIFY_WHATSAPP_CONFIG_ID=
 ```
 
 Arquivo `config/notify.php`:
@@ -100,9 +113,10 @@ Quando `routes = true`, o package registra automaticamente:
 ```
 POST /notify/webhook           → recebe status de notificações individuais
 POST /notify/webhook/campaign  → recebe status de campanhas
+POST /notify/webhook/whatsapp  → recebe os eventos do chat do WhatsApp
 ```
 
-Ambas já vêm protegidas pela validação de assinatura HMAC — veja
+Todas já vêm protegidas pela validação de assinatura HMAC — veja
 [Webhook receiver](#webhook-receiver).
 
 Para registrar manualmente (defina `routes = false`), aplique o middleware
@@ -116,6 +130,9 @@ Route::post('/notify/webhook',          [NotifyWebhookController::class, 'notifi
     ->middleware('notify.signature');
 
 Route::post('/notify/webhook/campaign', [NotifyWebhookController::class, 'campaign'])
+    ->middleware('notify.signature');
+
+Route::post('/notify/webhook/whatsapp', [NotifyWebhookController::class, 'whatsapp'])
     ->middleware('notify.signature');
 ```
 
@@ -135,6 +152,7 @@ Route::post('/notify/webhook/campaign', [NotifyWebhookController::class, 'campai
 | Teams | Microsoft Teams Webhooks | `notify.teams` |
 | WebSocket | Pusher | `notify.websocket` |
 | Webhook | HTTP genérico | `notify.webhook` |
+| WhatsApp | Número da conta (QR code) | `notify.whatsapp` |
 
 ---
 
@@ -1694,6 +1712,85 @@ NotifyQuery::server()->webhook()->config()
 
 ---
 
+### WhatsApp
+
+Envia pelo número de WhatsApp da conta, conectado no servidor pelo QR code (veja
+[Números](#números)). Sem credenciais: o provedor é o da plataforma.
+
+```php
+use RiseTechApps\Notify\Message\NotifyWhatsApp;
+
+class PedidoEnviado extends Notification
+{
+    public function via($notifiable): array
+    {
+        return ['notify.whatsapp'];
+    }
+
+    public function toNotifyWhatsApp($notifiable): NotifyWhatsApp
+    {
+        return (new NotifyWhatsApp)
+            ->content("Seu pedido *#{$this->pedido->id}* saiu para entrega.")
+            ->tag('pedido');
+    }
+}
+
+// No model: o número com DDI e DDD, só dígitos
+public function routeNotificationForWhatsapp(): string
+{
+    return $this->phone; // 5521999998888
+}
+```
+
+| Método | Descrição |
+|---|---|
+| `->to(string)` | Número (o `routeNotificationForWhatsapp()` tem prioridade) |
+| `->content(string)` | Texto. Aceita `*negrito*`, `_itálico_`, `~riscado~`. Com mídia, vira a legenda |
+| `->image(url)` · `->video(url)` · `->audio(url)` · `->document(url, fileName?)` | Mídia por URL pública |
+| `->media(url, type, fileName?)` | O mesmo, com o tipo (`image`, `video`, `audio`, `document`) |
+| `->poll(question, options, multiple = false)` | Enquete (2 a 12 opções). Ignora texto e mídia |
+| `->tag(string\|array)` | Tag(s) (acumula com `notify.whatsapp.tags`) |
+| `->configId(string)` | Número (id ou label). Default: `notify.whatsapp.config_id`, senão o padrão da conta |
+| `->webhookUrl(string)` | Callback de status (default: `notify.webhook`) |
+
+> O servidor converte o que o WhatsApp não aceita: imagem WebP vira JPEG e vídeo fora de
+> MP4 é convertido (se não der, vai como documento).
+
+> A **proteção do número** controla o ritmo, o limite diário e os contatos novos. Acima
+> do limite, a resposta é `429` com o motivo; veja `whatsappNumber($id)->protection()`.
+
+---
+
+### Opções de envio (todos os canais)
+
+Toda mensagem (`NotifySms`, `NotifyMail`, `NotifyWhatsApp`, …) aceita:
+
+```php
+(new NotifySms)
+    ->content('Lembrete da consulta amanhã às 9h')
+    ->scheduledAt('2026-12-01 08:00', 'America/Sao_Paulo') // agenda (até 30 dias)
+    ->configId('Twilio')->failover()   // se a config falhar, tenta as outras do canal
+    ->idempotencyKey("lembrete-{$consulta->id}") // repetir em 24 h não duplica
+    ->test();                          // valida e registra, sem enviar nem gastar cota
+```
+
+`NotifySms` e `NotifyMail` aceitam também um **modelo salvo** no servidor
+(veja [Recursos da conta](#recursos-da-conta)):
+
+```php
+(new NotifyMail)->template('boas-vindas', ['name' => $user->name, 'cupom' => 'BEMVINDO']);
+```
+
+| Método | Descrição |
+|---|---|
+| `->scheduledAt(DateTimeInterface\|string, timezone?)` | Envia mais tarde |
+| `->failover(bool = true)` | Com `configId()`, cai para as outras configurações do canal |
+| `->idempotencyKey(string)` | Cabeçalho `Idempotency-Key`: a repetição devolve a resposta original |
+| `->test(bool = true)` | Cabeçalho `X-Notify-Test`: nada sai pelo provedor |
+| `->template(idOuNome, variáveis)` | Modelo salvo (SMS e e-mail) |
+
+---
+
 ## Envio multicanal
 
 Dispara vários canais em **uma única requisição** (`POST /api/v1/send/multi`), sem passar
@@ -1734,6 +1831,22 @@ O retorno é o array cru da resposta — ou `['error' => ...]` em falha, igual a
 
 ---
 
+## Envio em lote
+
+Até **1.000 mensagens de um canal** numa chamada (`POST /api/v1/send/batch`). Cada item é o
+corpo do envio individual do canal; o terceiro argumento vale para o lote todo.
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+$result = NotifyQuery::server()->batch('whatsapp', [
+    ['to' => '5521911111111', 'content' => 'Olá, Ana'],
+    ['to' => '5521922222222', 'content' => 'Olá, Bruno'],
+], ['tag' => 'lembrete', 'config_id' => 'Loja'], idempotencyKey: 'lembrete-2026-10-12');
+```
+
+---
+
 ## Credenciais por driver
 
 > Para criar/atualizar/remover configurações, use `NotifyQuery::server()->{canal}()->config()`
@@ -1762,62 +1875,6 @@ O retorno é o array cru da resposta — ou `['error' => ...]` em falha, igual a
 | `teams` | `webhook` | `webhook_url`, `theme_color` |
 | `websocket` | `pusher` | `app_id`, `key`, `secret`, `cluster`, `host`, `port`, `scheme` |
 | `webhook` | `generic` | `default_url`, `timeout`, `auth_type`, `auth_token`, `auth_user`, `auth_password`, `api_key_header`, `secret`, `inject_metadata` |
-
-### Credenciais inline
-
-Alternativa ao `config_id`: mandar as credenciais **dentro do próprio disparo**, sem criar
-uma config salva no servidor. A classe `NotifyCredentials` monta o array
-`['driver' => ..., 'credentials' => [...]]` já com as chaves que o servidor espera.
-
-```php
-use RiseTechApps\Notify\NotifyCampaignBuilder;
-use RiseTechApps\Notify\NotifyCredentials;
-
-NotifyCampaignBuilder::sms()
-    ->name('Promo')
-    ->content('Olá {name}!')
-    ->contacts([...])
-    ->credentials(NotifyCredentials::twilio('ACxxx', 'auth-token', '+15551234567'))
-    ->send();
-
-NotifyCampaignBuilder::email()
-    ->name('Newsletter')
-    ->subject('Novidades')
-    ->contacts([...])
-    ->credentials(NotifyCredentials::resend('re_xxxxxxxxxxxx'))
-    ->send();
-```
-
-Fábricas disponíveis:
-
-| Canal | Chamada |
-|---|---|
-| SMS | `NotifyCredentials::mobizon($key, $apiServer = 'api.mobizon.com.br')` · `::clicksend($username, $apiKey, $from)` · `::twilio($sid, $token, $from)` |
-| Email | `::mailgun($domain, $secret, $endpoint)` · `::resend($apiKey)` · `::sendgrid($apiKey)` · `::ses($key, $secret, $region)` · `::postmark($token)` · `::smtp($host, $user, $pass, $port = 587, $encryption = 'tls')` |
-| Push | `::fcm(array\|string $serviceAccount)` · `::fcmFile($path)` — o Service Account vai inteiro em `credentials_json` |
-| APNS | `::apns($keyPath, $keyId, $teamId, $bundleId, $production = false)` |
-| Telegram | `::telegram($botToken)` |
-| Slack | `::slack($botToken, $webhookUrl = null, $defaultChannel = '#general')` |
-| Discord | `::discord($webhookUrl, $username = null, $avatarUrl = null)` |
-| Teams | `::teams($webhookUrl, $themeColor = '0076D7')` |
-| WebSocket | `::pusher($appId, $key, $secret, $cluster, $host, $port, $scheme)` |
-
-> ⚠️ `->credentials()` existe **apenas** no `NotifyCampaignBuilder` (e no builder de
-> [configurações de driver](#configurações-de-driver)). As classes de mensagem individuais
-> (`NotifySms`, `NotifyMail`, …) **não** aceitam credenciais inline — nelas use
-> `->configId()`.
-
-```php
-// Push: o JSON do Service Account é lido e embutido — o servidor nunca recebe caminho
-->credentials(NotifyCredentials::fcmFile(storage_path('app/google-services.json')))
-
-// ou inline, com o array/string JSON que você já tem em mãos
-->credentials(NotifyCredentials::fcm($serviceAccountArray))
-```
-
-> ⚠️ `::smtp()` monta `host/port/encryption/username/password`, mas no contrato atual o
-> driver `smtp` não declara `credential_fields` — o servidor usa o `config/mail.php` dele.
-> Só use se o seu servidor aceitar SMTP inline; caso contrário prefira ses/mailgun/resend.
 
 ### Usando uma config específica no envio
 
@@ -1882,7 +1939,6 @@ $campaign = NotifyCampaignBuilder::sms()
 | `->webhookUrl(string)` | URL de callback de progresso |
 | `->ratePerMinute(int)` | Envios por minuto. Min: 1, Máx: 600. Default: 60 |
 | `->scheduledAt(string)` | Agendamento: `'2026-06-01 08:00:00'` |
-| `->credentials(array)` | [Credenciais inline](#credenciais-inline) via `NotifyCredentials` |
 | `->send()` | Envia e retorna o array da resposta do servidor |
 
 > O servidor não aceita mais `from`/sender ID em SMS — o remetente vem da credencial (config).
@@ -1939,9 +1995,64 @@ $campaign = NotifyCampaignBuilder::email()
 | `->webhookUrl(string)` | URL de callback |
 | `->ratePerMinute(int)` | Envios por minuto. Default: 60 |
 | `->scheduledAt(string)` | Agendamento futuro (ISO 8601 com o offset de `config('app.timezone')`) |
-| `->credentials(array)` | [Credenciais inline](#credenciais-inline) via `NotifyCredentials` |
 | `->send()` | Envia com o template do pacote e retorna o array da resposta |
 | `->sendHtml(string $path)` | Envia usando um [HTML próprio](#template-html-próprio) |
+
+---
+
+### Campanha WhatsApp
+
+```php
+use RiseTechApps\Notify\NotifyCampaignBuilder;
+
+$campaign = NotifyCampaignBuilder::whatsapp()
+    ->name('Black Friday')
+    ->content('{Olá|Oi} {name}! Hoje tem 30% off com o cupom {cupom}.')
+    ->image('https://cdn.loja.com/bf.jpg')   // ou ->media($url, 'video') / ->mediaFile($caminho)
+    ->configId('Loja')
+    ->fromQuery(Cliente::where('aceita_whatsapp', true), 'celular', 'nome', ['cupom'])
+    ->send();
+
+$campaign['estimate']; // dias previstos, pela proteção do número
+```
+
+| Método | Descrição |
+|---|---|
+| `->content(string)` | Texto (legenda, com mídia). `{name}`, campos extras e variações `{Olá\|Oi}` |
+| `->media(url, type, fileName?)` | Mídia por URL: `image`, `video`, `document` ou `audio` |
+| `->mediaFile(path, fileName?)` | Arquivo local: enviado ao servidor no `send()` (vídeo é convertido para MP4) |
+| `->optOutFooter(bool = true, text?)` | Rodapé "responda SAIR" (ligado por padrão). Quem responde SAIR vai para os [descadastros](#recursos-da-conta) |
+| `->configId(string)` | Número que envia |
+| `->contacts()` · `->fromQuery()` · `->fromCollection()` | Contatos com `phone` |
+
+> Sem `ratePerMinute()`: o ritmo é o da proteção do número. Quem já conversou com o número
+> sai primeiro; os contatos novos se distribuem pelos dias, respeitando o limite diário. Se a
+> saúde do número cair, a campanha pausa (`paused_reason`) e volta com
+> `whatsappNumber($id)->resumeProtection()`.
+
+---
+
+### Opções comuns das campanhas
+
+```php
+NotifyCampaignBuilder::email()
+    ->name('Newsletter')
+    ->template('newsletter-outubro')          // modelo salvo (id ou nome)
+    ->listId('uuid-da-lista')                 // lista salva, no lugar dos contatos
+    ->sendWindow('09:00', '18:00', [1, 2, 3, 4, 5], 'America/Sao_Paulo')
+    ->abTest('Assunto B', samplePercent: 20, waitMinutes: 240)
+    ->idempotencyKey('newsletter-2026-10')
+    ->send();
+```
+
+| Método | Descrição |
+|---|---|
+| `->template(idOuNome)` | Modelo salvo; o que você definir no builder tem prioridade |
+| `->listId(string)` | [Lista de contatos](#recursos-da-conta) salva no servidor |
+| `->sendWindow(start, end, days, timezone?)` | Fora da janela, a campanha pausa e retoma na abertura seguinte. Dias: 1 (seg) a 7 (dom) |
+| `->abTest(subjectB, samplePercent = 20, waitMinutes = 240)` | Só e-mail: o restante recebe o assunto com mais aberturas |
+| `->idempotencyKey(string)` | Repetir a criação em 24 h não duplica a campanha |
+| `->test(bool = true)` | Roda sem enviar nem gastar cota |
 
 ---
 
@@ -2441,41 +2552,16 @@ $res = NotifyQuery::server()->webhook('server-uuid')->cancel();
 > Mesmo comportamento de tag dos outros canais: **sem `tag()` a listagem traz só os
 > envios SEM tag**.
 
-### Notificações (genérico, todos os canais)
+### Campanhas (todos os canais)
 
 ```php
 use RiseTechApps\Notify\NotifyQuery;
 
-// ── Notificações ─────────────────────────────────────────────────────────────
-
-// Listar — retorna ['data' => [...], 'meta' => [...]]
-$result = NotifyQuery::server()->notifications()
-    ->channel('sms')          // sms|email|push|apns|telegram|slack|discord|teams|websocket|webhook
-    ->status('send')          // created|sending|send|delivered|ready|error
-    ->from('2026-01-01')
-    ->to('2026-03-31')
-    ->campaignId('uuid')      // filtra por campanha
-    ->perPage(50)             // máx: 100, default: 25
-    ->page(2)
-    ->get();
-
-$result['data']; // array de notificações
-$result['meta']; // total, per_page, current_page, last_page
-
-// Detalhes + timeline de eventos de uma notificação
-$notification = NotifyQuery::server()->notification('server-uuid');
-// Inclui todos os campos + array 'events' com a timeline completa
-
-// Só a timeline (ideal para polling)
-$events = NotifyQuery::server()->notificationEvents('server-uuid');
-$events['current_status']; // status atual
-$events['events'];         // array de eventos com timestamps
-
 // ── Campanhas ─────────────────────────────────────────────────────────────────
-// Endpoints por canal: /api/v1/send/campaigns/{sms|mail}. Informe o canal no 1º arg.
+// Endpoints por canal: /api/v1/send/campaigns/{sms|mail|whatsapp}. Informe o canal no 1º arg.
 
 // Listar campanhas
-$result = NotifyQuery::server()->campaigns('mail')   // 'sms' | 'mail' (email vira mail)
+$result = NotifyQuery::server()->campaigns('mail')   // 'sms' | 'mail' | 'whatsapp' (email vira mail)
     ->status('completed')           // pending|processing|paused|completed|failed|cancelled
     ->tag('newsletter')             // opcional
     ->from('2026-01-01')
@@ -2504,7 +2590,16 @@ $contacts = NotifyQuery::server()->campaigns('mail', 'server-campaign-uuid')->co
 $contacts['data'];         // [['contact','name','status','error','sent_at'], ...]
 $contacts['pagination'];   // ['current_page','per_page','total','last_page']
 // Ideal para descobrir QUAIS contatos falharam e o porquê (ex.: 'Domínio sem MX').
+
+// Relatório: contatos por estado, entregues, aberturas, cliques, descadastros e teste A/B
+$report = NotifyQuery::server()->campaigns('mail', 'server-campaign-uuid')->report();
+
+// Contatos em CSV (o conteúdo do arquivo)
+Storage::put('campanha.csv', NotifyQuery::server()->campaigns('whatsapp', 'uuid')->export());
 ```
+
+O histórico de WhatsApp segue o padrão dos outros canais:
+`NotifyQuery::server()->whatsapp()->tag('pedido')->get()` e `->whatsapp('uuid')->get()`.
 
 ---
 
@@ -2529,6 +2624,9 @@ use RiseTechApps\Notify\Events\NotifyWebhookEvent;
 
 use RiseTechApps\Notify\Events\NotifyCampaignWebhookEvent;
 // (campaignId, status, payload)
+
+use RiseTechApps\Notify\Events\NotifyWhatsAppEvent;
+// (event, eventId, payload) — chat do WhatsApp, ver "Eventos do WhatsApp"
 ```
 
 Registre listeners no `EventServiceProvider`:
@@ -2545,6 +2643,160 @@ protected $listen = [
         App\Listeners\AtualizarProgressoCampanha::class,
     ],
 ];
+```
+
+---
+
+## WhatsApp: números, chat e equipe
+
+### Números
+
+Cada número é uma configuração do canal `whatsapp`. Para conectar, crie e mostre o QR code
+até o estado ficar `open`:
+
+```php
+use RiseTechApps\Notify\NotifyQuery;
+
+$numero = NotifyQuery::server()->whatsappNumber()->create('Atendimento', asDefault: true);
+$id = $numero['data']['id'];
+
+// A cada 3–5 s: mostre o qrcode (data URI) até state = open. O QR expira em ~40 s.
+$estado = NotifyQuery::server()->whatsappNumber($id)->state(); // ['state', 'qrcode', 'number']
+```
+
+| Método (`whatsappNumber($id)`) | Descrição |
+|---|---|
+| `create(label?, asDefault?)` · `all()` | Cria (sem id) e lista os números |
+| `state()` · `logout()` | Estado/QR code e desconexão |
+| `alerts()` · `updateAlerts([...])` | Avisos de queda e volta: e-mail e/ou webhook (`whatsapp.disconnected`, `reconnected`, `paused`) |
+| `chatSettings()` · `updateChatSettings([...])` | Chat do número: fluxo do bot, avisos ao contato, fechamento por inatividade, webhook e filtro de eventos. Sempre envie `enabled` e `mark_read` |
+| `importHistory('1d'\|'7d'\|'30d')` | Importa conversas do celular |
+| `protection()` · `resumeProtection()` | Uso do dia, limites, aquecimento e saúde; retoma os envios pausados |
+
+> Um número só fica conectado em uma configuração: conectar o mesmo número em outra é recusado.
+
+### Chat
+
+```php
+$chat = NotifyQuery::server()->chat();
+
+$chat->numbers();                                        // números com o chat ligado
+$chat->conversations()->status('queue')->search('Ana')->get(); // queue|bot|open|closed|all
+$chat->conversation($id)->messages();                    // as 50 mais recentes (->messages($antesDeId))
+
+// Agindo como o atendente do SEU sistema (cabeçalhos X-Agent-Id / X-Agent-Name):
+$conversa = $chat->as($user->id, $user->name)->conversation($id);
+$conversa->handoff();                       // assume (do bot ou da fila)
+$conversa->reply('Bom dia! Em que posso ajudar?');
+$conversa->replyFile(storage_path('app/boleto.pdf'), 'Segue o boleto');
+$conversa->replyPoll('Podemos encerrar?', ['Sim', 'Não']);
+$conversa->assign($outroMembroId);          // transfere (null devolve à fila)
+$conversa->close();
+
+// Nova conversa a partir de um número
+$chat->as($user->id)->start($configId, '5521999998888', 'Olá! Aqui é da Loja.');
+```
+
+- `as($externalId, $name)`: a resposta sai assinada com o nome, o atendente assume a conversa e
+  o contato é avisado. No primeiro uso com nome ele é cadastrado no servidor (sem login).
+- `asMember($id)`: o mesmo, com o id de alguém da equipe do painel (`team()->members()`).
+- Sem nenhum dos dois, as ações saem em nome da conta.
+
+| `conversation($id)` | Descrição |
+|---|---|
+| `get()` · `messages(before?, limit?)` | Conversa e mensagens |
+| `reply(text, quotedId?)` · `replyFile(path, caption?)` · `replyPoll(q, options)` | Respostas |
+| `read()` | Zera as não lidas |
+| `handoff()` · `assign(memberId\|null)` · `close()` · `reopen()` | Atendimento |
+| `rename(name)` | Nome do contato |
+
+Autoatendimento: `$chat->botFlows()` → `all()`, `get()`, `create(name, definition)`,
+`update()`, `delete()`, `uploadMedia(path)` e `simulate(definition, state, input)`.
+
+### Equipe e atendentes do seu sistema
+
+```php
+$team = NotifyQuery::server()->team();
+$team->members();                        // dono e membros: id, external_id, name, role
+$team->syncAgent($user->id, $user->name); // cadastra/atualiza (role: agent | admin)
+$team->updateAgent($user->id, role: 'admin');
+$team->removeAgent($user->id);           // as conversas dele voltam para a fila
+```
+
+Os atendentes de integração contam no limite de membros do plano.
+
+### Eventos do WhatsApp (webhook e cursor)
+
+Mensagens recebidas, enviadas, falhas, status (✓✓), edições e mudanças nas conversas viram o
+evento `NotifyWhatsAppEvent`, por dois caminhos que podem ser usados juntos — o mesmo
+`event_id` dispara **uma vez só** (memória de 24 h no cache):
+
+1. **Webhook**: cadastre `https://sua-app.com/notify/webhook/whatsapp` no chat do número
+   (`updateChatSettings(['webhook_url' => ...])`). A assinatura é validada como nos outros.
+2. **Cursor** (sem URL pública, ou para conferir o que o webhook perdeu):
+
+```bash
+php artisan notify:whatsapp-events                 # processo contínuo (supervisor), long polling
+php artisan notify:whatsapp-events --once          # uma passada (agendador)
+php artisan notify:whatsapp-events --types=message.received,conversation.updated
+php artisan notify:whatsapp-events --from-now      # ignora o cursor salvo
+```
+
+O cursor fica no cache (`notify:whatsapp-events:cursor`): ao reiniciar, continua de onde parou.
+Também dá para ler direto: `$chat->events()->after($cursor)->wait(25)->get()` →
+`['data', 'next', 'has_more']`; `$chat->events()->latest()` dá o cursor atual.
+
+```php
+use RiseTechApps\Notify\Events\NotifyWhatsAppEvent;
+
+class ResponderWhatsApp
+{
+    public function handle(NotifyWhatsAppEvent $event): void
+    {
+        if ($event->is('message.received')) {
+            $texto = $event->message()['body'];
+            $telefone = $event->conversation()['contact']['phone'];
+        }
+
+        if ($event->is('conversation.updated')) {
+            $mudou = $event->changes(); // ex.: ['status' => 'open', 'assigned_to' => ...]
+        }
+    }
+}
+```
+
+| Tipo (`$event->type()`) | Quando |
+|---|---|
+| `message.received` · `message.sent` · `message.failed` | Mensagem nova ou falha |
+| `message.status` · `message.updated` | Entregue/lida; editada ou apagada |
+| `conversation.opened` · `conversation.updated` · `conversation.closed` | Conversa |
+| `disconnected` · `reconnected` · `paused` | Avisos de conexão (pelo webhook dos alertas) |
+
+---
+
+## Recursos da conta
+
+```php
+$server = NotifyQuery::server();
+
+// Modelos de mensagem (e-mail, SMS, WhatsApp)
+$server->templates()->create('sms', 'lembrete', 'Olá {name}, sua consulta é amanhã.');
+$server->templates()->all('sms');
+
+// Listas de contatos (para ->listId() nas campanhas)
+$lista = $server->contactLists()->create('whatsapp', 'Clientes VIP');
+$server->contactLists()->addMembers($lista['data']['id'], [['phone' => '5521999998888', 'name' => 'Ana']]);
+
+// Descadastros (SAIR ou bloqueio manual)
+$server->optOuts()->all('whatsapp');
+$server->optOuts()->add(['5521999998888'], 'whatsapp');
+
+// Entregas de webhook, com reenvio
+$server->webhookDeliveries()->all(['status' => 'failed']);
+$server->webhookDeliveries()->resend($id);
+
+// Envios por canal e por dia
+$server->usage(30);
 ```
 
 ---

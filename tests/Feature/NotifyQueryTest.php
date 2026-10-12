@@ -97,12 +97,6 @@ it('server webhook returns ServerChannelQuery', function () {
     expect($query)->toBeInstanceOf(ServerChannelQuery::class);
 });
 
-it('server notifications returns ServerNotificationQuery', function () {
-    $query = NotifyQuery::server()->notifications();
-
-    expect($query)->toBeInstanceOf(\RiseTechApps\Notify\ServerNotificationQuery::class);
-});
-
 it('server campaigns returns ServerCampaignQuery', function () {
     $query = NotifyQuery::server()->campaigns('sms');
 
@@ -129,50 +123,3 @@ it('server configurations returns array', function () {
     expect($result)->toBeArray();
 });
 
-it('server notification returns data', function () {
-    Http::fake([
-        'https://notifykit.app.br/api/v1/notifications/uuid-123' => Http::response(['data' => ['id' => 'uuid-123', 'status' => 'sent']], 200),
-    ]);
-
-    $result = NotifyQuery::server()->notification('uuid-123');
-
-    expect($result)->toBe(['id' => 'uuid-123', 'status' => 'sent']);
-});
-
-it('server notificationEvents returns array', function () {
-    Http::fake([
-        'https://notifykit.app.br/api/v1/notifications/uuid-123/events' => Http::response(['current_status' => 'sent', 'events' => []], 200),
-    ]);
-
-    $result = NotifyQuery::server()->notificationEvents('uuid-123');
-
-    expect($result)->toHaveKey('current_status');
-});
-
-it('notification query can filter by search', function () {
-    $query = NotifyQuery::server()->notifications()->search('uuid-123');
-
-    expect($query)->toBeInstanceOf(\RiseTechApps\Notify\ServerNotificationQuery::class);
-});
-
-it('notification query can filter by tag', function () {
-    $query = NotifyQuery::server()->notifications()->tag('vip');
-
-    expect($query)->toBeInstanceOf(\RiseTechApps\Notify\ServerNotificationQuery::class);
-});
-
-it('notification query can filter by untagged', function () {
-    $query = NotifyQuery::server()->notifications()->untagged();
-
-    expect($query)->toBeInstanceOf(\RiseTechApps\Notify\ServerNotificationQuery::class);
-});
-
-it('notification get sends search param', function () {
-    Http::fake();
-
-    NotifyQuery::server()->notifications()->search('uuid-123')->get();
-
-    Http::assertSent(function ($request) {
-        return str_contains($request->url(), 'search=uuid-123');
-    });
-});

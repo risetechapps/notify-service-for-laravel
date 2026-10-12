@@ -15,6 +15,8 @@ abstract class TestCase extends BaseTestCase
 
         $this->app->make('config')->set('notify.key', 'test-api-key');
         $this->app->make('config')->set('notify.routes', false);
+        $this->app->make('config')->set('cache.default', 'array');
+        $this->app->make('config')->set('session.driver', 'array');
     }
 
     public function createApplication(): Application

@@ -2,6 +2,8 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+
 /**
  * Mensagem de Telegram enviada ao servidor via /api/v1/send/telegram.
  *
@@ -38,6 +40,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifyTelegram
 {
+    use HasSendOptions;
+
     // ── Alvo ────────────────────────────────────────────────────────────────────
     protected string $chatId = '';
 

@@ -2,6 +2,8 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+
 /**
  * Mensagem de Slack enviada ao servidor via /api/v1/send/slack.
  *
@@ -52,6 +54,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifySlack
 {
+    use HasSendOptions;
+
     // ── Conteúdo ──────────────────────────────────────────────────────────────
     protected string $message = '';
     protected ?string $channel = null;

@@ -2,6 +2,8 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+
 /**
  * Notificação via webhook HTTP genérico, enviada ao servidor via /api/v1/send/webhook.
  *
@@ -14,6 +16,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifyWebhook
 {
+    use HasSendOptions;
+
     protected string $url = '';
     protected string $method = 'POST';
     protected array $payload = [];

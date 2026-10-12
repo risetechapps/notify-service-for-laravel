@@ -2,6 +2,8 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+
 /**
  * Mensagem de Microsoft Teams enviada ao servidor via /api/v1/send/teams.
  *
@@ -26,6 +28,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifyTeams
 {
+    use HasSendOptions;
+
     protected ?string $channel = null;
     protected ?string $teamsWebhookUrl = null;
     protected string $message = '';

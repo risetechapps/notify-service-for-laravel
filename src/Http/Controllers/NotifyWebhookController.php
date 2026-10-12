@@ -8,6 +8,7 @@ use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Event;
 use RiseTechApps\Notify\Events\NotifyCampaignWebhookEvent;
 use RiseTechApps\Notify\Events\NotifyWebhookEvent;
+use RiseTechApps\Notify\Events\NotifyWhatsAppEvent;
 
 /**
  * Recebe callbacks de status do servidor de notificações e os repassa como
@@ -70,6 +71,23 @@ class NotifyWebhookController extends Controller
             status:     $request->input('status'),
             payload:    $request->all(),
         ));
+
+        return response()->json(['ok' => true]);
+    }
+
+    /**
+     * Webhook do chat do WhatsApp (e dos avisos de conexão): aponte o
+     * webhook_url das configurações do chat (e dos avisos) para esta rota.
+     * Dispara NotifyWhatsAppEvent uma vez por event_id.
+     */
+    public function whatsapp(Request $request): JsonResponse
+    {
+        $event = (string) $request->input('event', '');
+
+        if ($event !== '') {
+            $eventId = $request->input('event_id');
+            NotifyWhatsAppEvent::dispatchOnce($event, $eventId !== null ? (int) $eventId : null, $request->all());
+        }
 
         return response()->json(['ok' => true]);
     }

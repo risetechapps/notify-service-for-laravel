@@ -2,6 +2,8 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+
 /**
  * Mensagem de push (FCM) enviada ao servidor via /api/v1/send/push.
  *
@@ -54,6 +56,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifyPush
 {
+    use HasSendOptions;
+
     // ── Alvo ────────────────────────────────────────────────────────────────────
     public string|array $token = '';
     protected ?string $topic = null;

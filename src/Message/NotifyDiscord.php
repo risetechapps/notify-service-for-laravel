@@ -2,6 +2,8 @@
 
 namespace RiseTechApps\Notify\Message;
 
+use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
+
 /**
  * Mensagem de Discord enviada ao servidor via /api/v1/send/discord.
  *
@@ -42,6 +44,8 @@ namespace RiseTechApps\Notify\Message;
  */
 class NotifyDiscord
 {
+    use HasSendOptions;
+
     // ── Destino / conteúdo ──────────────────────────────────────────────────────
     protected ?string $channel = null;
     protected string $message = '';
