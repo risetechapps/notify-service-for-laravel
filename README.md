@@ -418,6 +418,23 @@ Detalhes desses métodos em [Consultas de status → Email](#email-endpoints-ded
 
 ---
 
+#### Mais opções do e-mail
+
+```php
+(new NotifyMail)
+    ->to('cliente@exemplo.com')
+    ->cc(['financeiro@exemplo.com'])          // até 10; cada cópia conta 1 na cota
+    ->bcc('auditoria@exemplo.com')
+    ->replyTo('suporte@exemplo.com', 'Suporte')
+    ->preheader('Seu boleto vence amanhã')     // prévia ao lado do assunto
+    ->header('X-Pedido', '1042')               // só X-…
+    ->attachUrl('https://cdn.app/nf.pdf', 'nota-fiscal.pdf')
+    ->attachFile(storage_path('app/boleto.pdf'))  // vai no corpo, sem URL pública (até 5 MB)
+    ->inline('logo', url: 'https://cdn.app/logo.png'); // no HTML: <img src="cid:logo">
+```
+
+`->html($html)` manda um HTML pronto no lugar do tema. Destinatário que deu bounce permanente ou marcou como spam fica suprimido no servidor: o envio termina em `failed` com `suppressed`.
+
 ### Push FCM
 
 ```php
@@ -653,6 +670,21 @@ Detalhes em [Consultas de status → APNS](#apns-endpoints-dedicados).
 
 ---
 
+#### Mais opções do APNs
+
+```php
+(new NotifyApns)
+    ->token($token)->title('Pedido saiu')->body('Chega hoje')
+    ->image('https://cdn.app/pedido.jpg')      // liga o mutable-content
+    ->interruptionLevel('time-sensitive')      // passive, active, time-sensitive, critical
+    ->relevanceScore(0.8)
+    ->ttl(3600)                                // segundos guardado com o aparelho desligado
+    ->collapseId('pedido-1042')
+    ->environment('sandbox');                  // servidor da Apple deste envio
+```
+
+Também: `->criticalSound('alarme.caf', 0.8)`, `->contentAvailable()` (silencioso, sem title e body), `->mutableContent()`, `->priority(5)` e `->topic('com.app.outro')`.
+
 ### Telegram
 
 Envia texto, foto, localização, contato, enquete e botões inline. O servidor enfileira
@@ -861,10 +893,15 @@ NotifyQuery::server()->telegram($notificationId)->editCaption('Nova legenda');
 // Apagar
 NotifyQuery::server()->telegram($notificationId)->delete();
 
-// Fixar (opcionalmente sem notificar os membros)
+// Fixar (opcionalmente sem notificar os membros) e desafixar
 NotifyQuery::server()->telegram($notificationId)->pin(disableNotification: true);
+NotifyQuery::server()->telegram($notificationId)->unpin();
 
-// Todas retornam: ['status' => bool, 'message' => string|null, 'http' => int]
+// Trocar a mídia (photo, video, document, audio, animation) e os botões ([] remove)
+NotifyQuery::server()->telegram($notificationId)->editMedia('https://cdn.app/nova.jpg', 'photo', 'Nova legenda');
+NotifyQuery::server()->telegram($notificationId)->editButtons([[['text' => 'Abrir', 'url' => 'https://app.com']]]);
+
+// Todas retornam: ['status' => bool, 'message' => string|null, 'errors' => array|null, 'http' => int]
 ```
 
 **Ciclo de vida completo do Telegram:**
@@ -881,6 +918,24 @@ NotifyQuery::server()->telegram($notificationId)->pin(disableNotification: true)
 Detalhes das consultas em [Consultas de status → Telegram](#telegram-endpoints-dedicados).
 
 ---
+
+#### Mais opções do Telegram
+
+```php
+(new NotifyTelegram)
+    ->chatId('-1001234567890')
+    ->message('Relatório do mês')
+    ->documentUrl('https://cdn.app/relatorio.pdf', 'relatorio.pdf');   // também videoUrl, audioUrl, voiceUrl, animationUrl
+
+(new NotifyTelegram)->chatId($chat)->mediaFile(storage_path('app/foto.jpg'))->spoiler(); // arquivo no corpo, até 8 MB
+(new NotifyTelegram)->chatId($chat)->mediaGroup([
+    ['type' => 'photo', 'url' => 'https://cdn.app/1.jpg', 'caption' => 'Antes'],
+    ['type' => 'photo', 'url' => 'https://cdn.app/2.jpg'],
+]);
+(new NotifyTelegram)->chatId($chat)->quiz('2 + 2?', ['3', '4', '5'], correctOptionId: 1, explanation: 'Básico');
+```
+
+Também: `->captionAbove()`, `->replyTo($messageId, allowWithoutReply: true)` e `poll($pergunta, $opcoes, extra: ['open_period' => 60])`. Para descobrir o `chat_id`, `NotifyQuery::server()->telegram()->config($id)->telegramChats()`.
 
 ### Slack
 
@@ -1133,10 +1188,18 @@ use RiseTechApps\Notify\NotifyQuery;
 // Editar (chat.update)
 NotifyQuery::server()->slack($notificationId)->edit('Deploy *concluído* ✅');
 
-// Apagar (chat.delete)
+// Apagar (chat.delete; mensagem com arquivo usa files.delete; agendada é cancelada)
 NotifyQuery::server()->slack($notificationId)->delete();
 
-// Ambas retornam: ['status' => bool, 'message' => string|null, 'http' => int]
+// Fixar, desafixar e reagir (escopos pins:write e reactions:write)
+NotifyQuery::server()->slack($notificationId)->pin();
+NotifyQuery::server()->slack($notificationId)->unpin();
+NotifyQuery::server()->slack($notificationId)->react('white_check_mark');
+
+// Editar também o anexo (title, color, fields…) pelo 3º argumento
+NotifyQuery::server()->slack($notificationId)->edit('Deploy concluído', extra: ['color' => '#2ecc71']);
+
+// Retornam: ['status' => bool, 'message' => string|null, 'errors' => array|null, 'http' => int]
 ```
 
 **Ciclo de vida completo do Slack:**
@@ -1153,6 +1216,18 @@ NotifyQuery::server()->slack($notificationId)->delete();
 Detalhes em [Consultas de status → Slack](#slack-endpoints-dedicados).
 
 ---
+
+#### Mais opções do Slack
+
+```php
+(new NotifySlack)->channel('C0123ABCD')->message('Só você vê isto')->ephemeral('U0456EFGH');
+(new NotifySlack)->channel('C0123ABCD')->thread($ts)->message('Resolvido')->replyBroadcast();
+(new NotifySlack)->channel('C0123ABCD')->filePath(storage_path('app/relatorio.pdf'), 'Relatório');  // arquivo no corpo, até 8 MB
+(new NotifySlack)->channel('C0123ABCD')->message('Bom dia!')
+    ->scheduledAt('2026-12-01 09:00', 'America/Sao_Paulo')->slackSchedule();   // o Slack publica no horário
+```
+
+Também: `->unfurl(links: false, media: false)` e `->escape(false)` (manda `<https://x|link>` e `<!here>` sem escapar). Para descobrir o ID do canal, `NotifyQuery::server()->slack()->config($id)->slackChannels()`. O Slack só envia pela sua configuração: sem uma ativa (ou sem `->slackWebhookUrl()`), o servidor responde 422.
 
 ### Discord
 
@@ -1383,7 +1458,10 @@ NotifyQuery::server()->discord($notificationId)->edit('Incidente resolvido ✅')
 // Apagar (DELETE)
 NotifyQuery::server()->discord($notificationId)->delete();
 
-// Ambas retornam: ['status' => bool, 'message' => string|null, 'http' => int]
+// Editar também o embed (title, color, fields…) pelo 3º argumento
+NotifyQuery::server()->discord($notificationId)->edit('Incidente resolvido', extra: ['color' => '#2ecc71']);
+
+// Ambas retornam: ['status' => bool, 'message' => string|null, 'errors' => array|null, 'http' => int]
 ```
 
 **Ciclo de vida completo do Discord:**
@@ -1400,6 +1478,17 @@ NotifyQuery::server()->discord($notificationId)->delete();
 Detalhes em [Consultas de status → Discord](#discord-endpoints-dedicados).
 
 ---
+
+#### Mais opções do Discord
+
+```php
+(new NotifyDiscord)->message('Votem!')->poll('Melhor dia?', ['Seg', 'Qua', 'Sex'], hours: 48);
+(new NotifyDiscord)->message('Arquivos')->addFile(url: 'https://cdn.app/a.pdf')->addFile(content: $csv, filename: 'dados.csv');
+(new NotifyDiscord)->threadName('Bug #42')->appliedTags(['1234567890123456789'])->message('Novo relato');
+(new NotifyDiscord)->title('Deploy')->color('#2ecc71')->timestamp(false)->silent()->suppressEmbeds();
+```
+
+Só as `->mentions()` notificam: um `@everyone` no texto aparece, mas não pinga. O Discord só envia pela sua configuração (ou `->discordWebhookUrl()`); sem ela, 422.
 
 ### Teams
 
@@ -1446,13 +1535,15 @@ class RelatorioSemanal extends Notification
 | `->message(string)` | Corpo da mensagem. Máx: 4000 chars (obrigatório, salvo com `card` cru) |
 | `->title(string)` | Título do card. Máx: 255 |
 | `->subtitle(string)` | Subtítulo do card. Máx: 255 |
-| `->color(string)` | Cor hex sem `#`, ex: `0078D4` (o `#` é removido automaticamente) |
+| `->color(string)` | `#RRGGBB` (vira o estilo mais próximo) ou estilo: `good`, `warning`, `attention`, `accent`, `emphasis` |
 | `->imageUrl(string)` | Imagem do card |
 | `->fact(label, value)` | Par chave-valor no card |
 | `->facts(array)` | Define todos os facts de uma vez (substitui) |
 | `->action(label, url)` | Botão de ação |
 | `->actions(array)` | Define todos os botões de uma vez (substitui) |
-| `->card(array)` | MessageCard/Adaptive Card cru (passthrough; ignora o atalho acima) |
+| `->card(array)` | Adaptive Card cru, envelope completo ou MessageCard (só conector antigo); ignora o atalho acima |
+| `->mention(id, nome)` | Menção (`<at>Nome</at>` no texto); id = e-mail ou ID do Entra |
+| `->fullWidth()` | Card na largura toda do canal |
 
 **Servidor:**
 
@@ -1500,17 +1591,16 @@ use RiseTechApps\Notify\Message\NotifyTeams;
     ->action('Abrir runbook', 'https://app.com/runbooks/payments')
     ->action('Ver dashboard', 'https://app.com/status');
 
-// Card cru (MessageCard/Adaptive Card) — passthrough total
+// Card cru (Adaptive Card) — o servidor põe no envelope do Teams
 (new NotifyTeams)->card([
-    '@type'    => 'MessageCard',
-    '@context' => 'http://schema.org/extensions',
-    'summary'  => 'Resumo',
-    'sections' => [['activityTitle' => 'Meu card', 'text' => 'Conteúdo']],
+    'type'    => 'AdaptiveCard',
+    'version' => '1.4',
+    'body'    => [['type' => 'TextBlock', 'text' => 'Meu card', 'wrap' => true]],
 ]);
 
 // Webhook de destino direto + callback de status próprio
 (new NotifyTeams)
-    ->teamsWebhookUrl('https://outlook.office.com/webhook/X')
+    ->teamsWebhookUrl('https://prod-00.westus.logic.azure.com:443/workflows/X/triggers/manual/paths/invoke?sig=Y')
     ->message('Aviso')
     ->webhookUrl('https://sua-app.com/notify/webhook');
 ```
@@ -1539,6 +1629,21 @@ Detalhes em [Consultas de status → Teams](#teams-endpoints-dedicados).
 > Telegram/Slack/Discord.
 
 ---
+
+#### Teams no formato atual
+
+O card sai como **Adaptive Card**, e a URL de destino é a de um fluxo do **Workflows** do Teams (template "Post to a channel when a webhook request is received"). Conector antigo do Office 365 ainda funciona, com aviso (`warning`) no `sent`. Só URLs da Microsoft são aceitas.
+
+```php
+(new NotifyTeams)
+    ->title('Incidente')
+    ->message('API fora do ar. <at>Ana</at>, pode olhar?')
+    ->mention('ana@empresa.com', 'Ana')
+    ->color('attention')         // ou '#FF0000', que vira o estilo mais próximo
+    ->fullWidth();
+```
+
+`->card()` aceita Adaptive Card (`'type' => 'AdaptiveCard'`), o envelope completo ou MessageCard (só no conector antigo). O Teams só envia pela sua configuração (ou `->teamsWebhookUrl()`); sem ela, 422.
 
 ### WebSocket
 
@@ -1647,6 +1752,17 @@ Detalhes em [Consultas de status → WebSocket](#websocket-endpoints-dedicados).
 
 ---
 
+#### Mais opções do WebSocket
+
+```php
+(new NotifyWebSocket)->channel('user.42')->private()->event('NovaMensagem')->data([...])
+    ->except($request->header('X-Socket-ID'));          // quem disparou não recebe
+
+(new NotifyWebSocket)->channels(['sala.1', 'sala.2'])->presence()->event('Aviso')->data([...]);  // cada canal conta 1
+```
+
+Também: `->notifyMeta(false)` tira o `_notify` do `data`. O WebSocket só envia pela sua configuração (app do Pusher, Soketi ou Reverb); sem ela, 422. Na configuração: `->maxPayloadKb(100)` e `->encryptionMasterKey($base64)` para canais `private-encrypted-`.
+
 ### Webhook
 
 Faz uma requisição HTTP a um endpoint de destino (ERP, sistema externo etc.). O servidor
@@ -1742,6 +1858,12 @@ NotifyQuery::server()->webhook()->config()
 
 ---
 
+#### Webhook só pela sua configuração
+
+O servidor não usa nada da plataforma neste canal: token, segredo e URL padrão vêm da mensagem ou da sua configuração do canal. Sem `->url()`, é preciso uma configuração com `default_url`; sem as duas coisas, 422. `->apiKeyAuth($token, 'X-Chave')` escolhe o header e `->hmacAuth($segredo)` assina com o segredo informado.
+
+`->method('DELETE')` também vale. `->asForm()` manda o corpo como formulário (não combina com `hmacAuth()`) e `->notifyMeta(false)` não acrescenta o `_notify` ao payload. Cada entrega chega ao destino com `X-Notify-Delivery` (o id da notificação, igual em todas as tentativas) e `X-Notify-Attempt`; use o primeiro para descartar repetição. `hmacAuth()` sem segredo na mensagem nem na configuração dá 422, e headers como `Host`, `Content-Length` e `X-Notify-*` são recusados. No histórico, token, senha, segredo e valores dos headers voltam como `********`.
+
 ### WhatsApp
 
 Envia pelo número de WhatsApp da conta, conectado no servidor pelo QR code (veja
@@ -1790,6 +1912,18 @@ public function routeNotificationForWhatsapp(): string
 > do limite, a resposta é `429` com o motivo; veja `whatsappNumber($id)->protection()`.
 
 ---
+
+#### Mais opções do WhatsApp
+
+```php
+(new NotifyWhatsApp)->group('120363012345678901@g.us')->mentionAll()->content('Reunião às 15h');
+(new NotifyWhatsApp)->to('5521999998888')->mediaFile(storage_path('app/boleto.pdf'));   // no corpo, até 8 MB
+(new NotifyWhatsApp)->to('5521999998888')->location(-22.9, -43.2, 'Loja Centro', 'Rua X, 10');
+(new NotifyWhatsApp)->to('5521999998888')->contact('Suporte', '5521988887777');
+(new NotifyWhatsApp)->to('5521999998888')->content('https://app.com')->linkPreview(false)->typing(false);
+```
+
+Editar e apagar: `NotifyQuery::server()->whatsapp($notificationId)->edit('Texto novo')` (até 15 minutos) e `->delete()` (até 2 dias). Grupos do número: `NotifyQuery::server()->whatsapp()->config($id)->whatsappGroups()`.
 
 ### Opções de envio (todos os canais)
 
@@ -3061,7 +3195,7 @@ NotifyQuery::server()->sms()->config('config-uuid')->setDefault();
 NotifyQuery::server()->sms()->config('config-uuid')->delete();
 ```
 
-### Aliases de canal (Telegram e Slack)
+### Aliases de canal (Telegram, Slack, Discord e Teams)
 
 Cadastre **nomes lógicos** (ex.: `equipe`, `geral`, `help`) por configuração e, no envio,
 mande só o nome — o servidor resolve para o destino real (chat_id no Telegram; ID/`#canal`

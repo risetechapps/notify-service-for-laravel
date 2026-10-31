@@ -57,7 +57,7 @@ class NotifyDiscord
 
     protected ?string $title = null;
 
-    protected ?int $color = null;
+    protected int|string|null $color = null;
 
     protected ?string $imageUrl = null;
 
@@ -87,6 +87,20 @@ class NotifyDiscord
 
     // ── Transporte / servidor ───────────────────────────────────────────────────
     protected ?string $discordWebhookUrl = null;
+
+    protected ?string $fileBase64 = null;
+
+    protected array $files = [];
+
+    protected ?bool $silent = null;
+
+    protected ?bool $suppressEmbeds = null;
+
+    protected ?array $poll = null;
+
+    protected array $appliedTags = [];
+
+    protected string|false|null $timestamp = null;
 
     protected array $tags = [];
 
@@ -141,10 +155,10 @@ class NotifyDiscord
     }
 
     /**
-     * Cor do embed em decimal.
-     * Dica: ->color(0x2ecc71) para verde, ->color(0xe74c3c) para vermelho.
+     * Cor do embed em decimal ou "#RRGGBB".
+     * Dica: ->color(0x2ecc71) ou ->color('#2ecc71') para verde.
      */
-    public function color(int $color): static
+    public function color(int|string $color): static
     {
         $this->color = $color;
 
@@ -275,6 +289,74 @@ class NotifyDiscord
      * Webhook de destino do Discord (override da config). Não confundir com
      * ->webhookUrl(), que é o callback de status.
      */
+    /**
+     * Arquivo no corpo da requisição, sem URL pública: conteúdo cru (o pacote
+     * converte para base64). Para vários, use addFile().
+     */
+    public function fileData(string $content, string $filename): static
+    {
+        $this->fileBase64 = base64_encode($content);
+        $this->filename = $filename;
+        $this->fileUrl = null;
+
+        return $this;
+    }
+
+    /**
+     * Mais um arquivo (até 10 por mensagem, 10 MB somados): por URL ou por
+     * conteúdo cru com o nome.
+     */
+    public function addFile(?string $url = null, ?string $content = null, ?string $filename = null): static
+    {
+        $this->files[] = array_filter([
+            'url' => $url,
+            'base64' => $content !== null ? base64_encode($content) : null,
+            'filename' => $filename,
+        ], fn ($v) => $v !== null);
+
+        return $this;
+    }
+
+    /** Chega sem notificar (sem som nem aviso no celular). */
+    public function silent(bool $silent = true): static
+    {
+        $this->silent = $silent;
+
+        return $this;
+    }
+
+    /** Sem prévia dos links do texto. */
+    public function suppressEmbeds(bool $suppress = true): static
+    {
+        $this->suppressEmbeds = $suppress;
+
+        return $this;
+    }
+
+    /** Enquete: até 10 respostas, duração em horas (1 a 768, padrão 24). */
+    public function poll(string $question, array $answers, int $hours = 24, bool $multiselect = false): static
+    {
+        $this->poll = ['question' => $question, 'answers' => array_values($answers), 'duration' => $hours, 'allow_multiselect' => $multiselect];
+
+        return $this;
+    }
+
+    /** Tags do post novo em fórum (com threadName), até 5 IDs. */
+    public function appliedTags(array $tagIds): static
+    {
+        $this->appliedTags = array_values($tagIds);
+
+        return $this;
+    }
+
+    /** Horário do embed do atalho: uma data, ou false para nenhum (o padrão é a hora do envio). */
+    public function timestamp(\DateTimeInterface|string|false $at): static
+    {
+        $this->timestamp = $at instanceof \DateTimeInterface ? $at->format(\DateTimeInterface::ATOM) : $at;
+
+        return $this;
+    }
+
     public function discordWebhookUrl(string $url): static
     {
         $this->discordWebhookUrl = $url;
@@ -346,6 +428,13 @@ class NotifyDiscord
 
             // Transporte / servidor
             'discord_webhook_url' => $this->discordWebhookUrl,
+            'file_base64' => $this->fileBase64,
+            'files' => $this->files ?: null,
+            'silent' => $this->silent,
+            'suppress_embeds' => $this->suppressEmbeds,
+            'poll' => $this->poll,
+            'applied_tags' => $this->appliedTags ?: null,
+            'timestamp' => $this->timestamp,
             'tag' => $tags ?: null,
             'config_id' => $this->configId ?: config('notify.discord.config_id'),
             'webhook_url' => $this->webhookUrl,

@@ -93,6 +93,20 @@ class NotifySlack
     // ── Transporte / servidor ───────────────────────────────────────────────────
     protected ?string $slackWebhookUrl = null;
 
+    protected ?string $fileBase64 = null;
+
+    protected ?string $ephemeralUser = null;
+
+    protected ?bool $replyBroadcast = null;
+
+    protected ?bool $unfurlLinks = null;
+
+    protected ?bool $unfurlMedia = null;
+
+    protected ?bool $escape = null;
+
+    protected ?bool $slackSchedule = null;
+
     protected array $tags = [];
 
     protected ?string $configId = null;
@@ -242,6 +256,74 @@ class NotifySlack
      * Quando informada, força o modo Incoming Webhook (o channel é ignorado).
      * Não confundir com ->webhookUrl(), que é o callback de status.
      */
+    /**
+     * Arquivo no corpo da requisição (até 8 MB), sem URL pública: conteúdo
+     * cru (o pacote converte para base64). Só com Bot Token.
+     */
+    public function fileData(string $content, string $filename, ?string $title = null): static
+    {
+        $this->fileBase64 = base64_encode($content);
+        $this->filename = $filename;
+        $this->fileTitle = $title ?? $this->fileTitle;
+        $this->fileUrl = null;
+
+        return $this;
+    }
+
+    /** Arquivo local. */
+    public function filePath(string $path, ?string $title = null): static
+    {
+        return $this->fileData((string) file_get_contents($path), basename($path), $title);
+    }
+
+    /** Mensagem efêmera: só este usuário (U…) vê, no canal. */
+    public function ephemeral(string $userId): static
+    {
+        $this->ephemeralUser = $userId;
+
+        return $this;
+    }
+
+    /** Resposta na thread que aparece também no canal. */
+    public function replyBroadcast(bool $broadcast = true): static
+    {
+        $this->replyBroadcast = $broadcast;
+
+        return $this;
+    }
+
+    /** Prévia dos links e da mídia do texto. */
+    public function unfurl(?bool $links = true, ?bool $media = null): static
+    {
+        $this->unfurlLinks = $links;
+        $this->unfurlMedia = $media;
+
+        return $this;
+    }
+
+    /**
+     * false: manda o texto como está, sem escapar &, < e > (para usar a
+     * sintaxe do Slack, como <https://x|link> ou <!here>).
+     */
+    public function escape(bool $escape = true): static
+    {
+        $this->escape = $escape;
+
+        return $this;
+    }
+
+    /**
+     * Com scheduledAt(): entrega já ao Slack (chat.scheduleMessage), que
+     * publica no horário mesmo com o notify fora do ar. Só com Bot Token, sem
+     * arquivo nem efêmera.
+     */
+    public function slackSchedule(bool $native = true): static
+    {
+        $this->slackSchedule = $native;
+
+        return $this;
+    }
+
     public function slackWebhookUrl(string $url): static
     {
         $this->slackWebhookUrl = $url;
@@ -312,6 +394,13 @@ class NotifySlack
 
             // Transporte / servidor
             'slack_webhook_url' => $this->slackWebhookUrl,
+            'file_base64' => $this->fileBase64,
+            'ephemeral_user' => $this->ephemeralUser,
+            'reply_broadcast' => $this->replyBroadcast,
+            'unfurl_links' => $this->unfurlLinks,
+            'unfurl_media' => $this->unfurlMedia,
+            'escape' => $this->escape,
+            'slack_schedule' => $this->slackSchedule,
             'tag' => $tags ?: null,
             'config_id' => $this->configId ?: config('notify.slack.config_id'),
             'webhook_url' => $this->webhookUrl,

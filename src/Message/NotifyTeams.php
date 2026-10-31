@@ -7,9 +7,10 @@ use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
 /**
  * Mensagem de Microsoft Teams enviada ao servidor via /api/v1/send/teams.
  *
- * Monta um card (título, subtítulo, cor, imagem, facts e botões de ação) — ou um card
- * cru (MessageCard/Adaptive Card) via ->card(). O servidor enfileira (resposta 202 com
- * notification_id) e devolve status pelo webhook.
+ * Monta um Adaptive Card (título, subtítulo, cor, imagem, facts, botões e menções) — ou
+ * um card cru via ->card(). O destino é a URL de um fluxo do Workflows do Teams (ou de
+ * um conector antigo do Office 365, em desativação). O servidor enfileira (resposta 202
+ * com notification_id) e devolve status pelo webhook.
  *
  * Destino (precedência): ->teamsWebhookUrl() (URL direta) > ->channel() (alias) >
  * webhook padrão da config.
@@ -49,6 +50,10 @@ class NotifyTeams
     protected array $actions = [];
 
     protected ?array $card = null;
+
+    protected array $mentions = [];
+
+    protected ?bool $fullWidth = null;
 
     protected array $tags = [];
 
@@ -109,12 +114,33 @@ class NotifyTeams
     }
 
     /**
-     * Cor do tema em hex sem #.
-     * Exemplo: ->color('2ecc71') para verde.
+     * Cor do card: "#RRGGBB" (vira o estilo mais próximo) ou um estilo do
+     * Adaptive Card: good, warning, attention, accent, emphasis, default.
+     * Exemplo: ->color('#2ecc71') ou ->color('good').
      */
     public function color(string $color): static
     {
-        $this->color = ltrim($color, '#');
+        $this->color = $color;
+
+        return $this;
+    }
+
+    /**
+     * Menciona um usuário: $id é o e-mail (UPN) ou o ID no Entra. No texto,
+     * escreva <at>{$name}</at> onde a menção deve aparecer; sem isso, ela vai
+     * no fim do card. Até 20.
+     */
+    public function mention(string $id, string $name): static
+    {
+        $this->mentions[] = ['id' => $id, 'name' => $name];
+
+        return $this;
+    }
+
+    /** Card na largura toda do canal. */
+    public function fullWidth(bool $fullWidth = true): static
+    {
+        $this->fullWidth = $fullWidth;
 
         return $this;
     }
@@ -162,9 +188,9 @@ class NotifyTeams
     }
 
     /**
-     * Card cru (MessageCard / Adaptive Card) — passthrough total. Quando definido,
-     * o servidor envia este card como está; title/facts/actions/etc. do atalho são
-     * ignorados.
+     * Card cru: Adaptive Card ("type" => "AdaptiveCard", o servidor põe no
+     * envelope), o envelope {type: message, attachments} ou MessageCard (só
+     * conector antigo). title/facts/actions/etc. do atalho são ignorados.
      */
     public function card(array $card): static
     {
@@ -221,6 +247,8 @@ class NotifyTeams
             'facts' => $this->facts ?: null,
             'actions' => $this->actions ?: null,
             'card' => $this->card,
+            'mentions' => $this->mentions ?: null,
+            'full_width' => $this->fullWidth,
             'tag' => $tags ?: null,
             'config_id' => $this->configId ?: config('notify.teams.config_id'),
             'webhook_url' => $this->webhookUrl,

@@ -308,6 +308,18 @@ class ServerDriverConfig
         return $this->credential('scheme', $scheme);
     }
 
+    /** Limite do data de um evento, em KB (padrão 10, o do Pusher Cloud). */
+    public function maxPayloadKb(int $kb): static
+    {
+        return $this->credential('max_payload_kb', $kb);
+    }
+
+    /** Chave dos canais private-encrypted- (32 bytes em base64). */
+    public function encryptionMasterKey(string $base64): static
+    {
+        return $this->credential('encryption_master_key_base64', $base64);
+    }
+
     // ── Credenciais — Webhook (driver generic) ──────────────────────────────────
     public function defaultUrl(string $url): static
     {
@@ -414,8 +426,9 @@ class ServerDriverConfig
 
     /**
      * Envia uma mensagem de teste por esta configuração (exige o id). $to:
-     * destino do teste (e-mail, telefone, token…); sem ele, o servidor usa o
-     * padrão do canal quando há.
+     * destino do teste (e-mail, telefone, token…). Sem ele, Telegram, Slack,
+     * Discord e WebSocket só conferem as credenciais, sem enviar nada; o
+     * webhook usa o default_url.
      */
     public function test(?string $to = null): array
     {
@@ -424,6 +437,39 @@ class ServerDriverConfig
         }
 
         $response = $this->http()->post("/api/v1/configurations/{$this->id}/test", array_filter(['to' => $to]));
+
+        return ($response->json() ?? []) + ['http' => $response->status()];
+    }
+
+    /**
+     * Telegram: quem falou com o bot nas últimas 24 h e os grupos e canais em
+     * que ele está, com o chat_id de cada um.
+     */
+    public function telegramChats(): array
+    {
+        return $this->lookup('telegram/chats');
+    }
+
+    /** Slack: canais do workspace, com o ID, se o bot está em cada um e o apelido. */
+    public function slackChannels(): array
+    {
+        return $this->lookup('slack/channels');
+    }
+
+    /** WhatsApp: grupos do número, com o group_id (…@g.us). $fresh ignora o cache de 5 minutos. */
+    public function whatsappGroups(bool $fresh = false): array
+    {
+        return $this->lookup('whatsapp/groups', $fresh ? ['fresh' => 1] : []);
+    }
+
+    /** GET /api/v1/configurations/{id}/{path}. */
+    protected function lookup(string $path, array $query = []): array
+    {
+        if ($this->id === null) {
+            return ['status' => false, 'message' => 'Config id is required.', 'http' => 0];
+        }
+
+        $response = $this->http()->get("/api/v1/configurations/{$this->id}/{$path}", $query);
 
         return ($response->json() ?? []) + ['http' => $response->status()];
     }
@@ -439,7 +485,7 @@ class ServerDriverConfig
     }
 
     /**
-     * Aliases de canal desta configuração (apenas Telegram e Slack).
+     * Aliases de canal desta configuração (Telegram, Slack, Discord e Teams).
      * Nomes lógicos (ex.: "equipe") que o servidor resolve para o destino real
      * (chat_id no Telegram, ID/#canal no Slack) na hora do envio. Requer o id da config.
      *

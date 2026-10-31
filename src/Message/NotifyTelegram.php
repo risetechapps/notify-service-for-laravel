@@ -72,6 +72,23 @@ class NotifyTelegram
 
     protected ?bool $disablePreview = null;
 
+    /** Mídia por URL: tipo (document, video, audio, voice, animation) => URL. */
+    protected array $media = [];
+
+    protected ?string $filename = null;
+
+    protected ?string $mediaBase64 = null;
+
+    protected ?string $mediaType = null;
+
+    protected ?bool $hasSpoiler = null;
+
+    protected ?bool $captionAbove = null;
+
+    protected array $mediaGroup = [];
+
+    protected ?bool $allowWithoutReply = null;
+
     // ── Servidor ──────────────────────────────────────────────────────────────
     protected array $tags = [];
 
@@ -132,14 +149,125 @@ class NotifyTelegram
         return $this;
     }
 
-    /** Envia uma enquete. */
-    public function poll(string $question, array $options, bool $isAnonymous = true): static
+    /**
+     * Envia uma enquete (até 12 opções). $extra aceita allows_multiple_answers,
+     * open_period (5 a 600 s) e, num quiz, type, correct_option_id e explanation
+     * — ou use quiz().
+     */
+    public function poll(string $question, array $options, bool $isAnonymous = true, array $extra = []): static
     {
         $this->poll = [
             'question' => $question,
             'options' => array_values($options),
             'is_anonymous' => $isAnonymous,
+            ...$extra,
         ];
+
+        return $this;
+    }
+
+    /** Quiz: enquete com uma resposta certa (índice a partir de 0). */
+    public function quiz(string $question, array $options, int $correctOptionId, ?string $explanation = null, bool $isAnonymous = true): static
+    {
+        return $this->poll($question, $options, $isAnonymous, array_filter([
+            'type' => 'quiz',
+            'correct_option_id' => $correctOptionId,
+            'explanation' => $explanation,
+        ], fn ($v) => $v !== null));
+    }
+
+    /** Documento por URL; o message vira a legenda. */
+    public function documentUrl(string $url, ?string $filename = null): static
+    {
+        $this->media['document'] = $url;
+        $this->filename = $filename ?? $this->filename;
+
+        return $this;
+    }
+
+    public function videoUrl(string $url): static
+    {
+        $this->media['video'] = $url;
+
+        return $this;
+    }
+
+    public function audioUrl(string $url): static
+    {
+        $this->media['audio'] = $url;
+
+        return $this;
+    }
+
+    /** Mensagem de voz (OGG/Opus). */
+    public function voiceUrl(string $url): static
+    {
+        $this->media['voice'] = $url;
+
+        return $this;
+    }
+
+    /** GIF ou vídeo curto sem som. */
+    public function animationUrl(string $url): static
+    {
+        $this->media['animation'] = $url;
+
+        return $this;
+    }
+
+    /**
+     * Arquivo no corpo da requisição (até 8 MB), sem URL pública: conteúdo
+     * cru (o pacote converte para base64). Tipo: photo, document, video,
+     * audio, voice ou animation.
+     */
+    public function media(string $content, string $type, ?string $filename = null): static
+    {
+        $this->mediaBase64 = base64_encode($content);
+        $this->mediaType = $type;
+        $this->filename = $filename ?? $this->filename;
+
+        return $this;
+    }
+
+    /** Arquivo local; o tipo é deduzido do mime quando não informado. */
+    public function mediaFile(string $path, ?string $type = null): static
+    {
+        $mime = (string) mime_content_type($path);
+        $type ??= match (true) {
+            str_starts_with($mime, 'image/gif') => 'animation',
+            str_starts_with($mime, 'image/') => 'photo',
+            str_starts_with($mime, 'video/') => 'video',
+            str_starts_with($mime, 'audio/ogg') => 'voice',
+            str_starts_with($mime, 'audio/') => 'audio',
+            default => 'document',
+        };
+
+        return $this->media((string) file_get_contents($path), $type, basename($path));
+    }
+
+    /**
+     * Álbum de 2 a 10 itens: [['type' => 'photo|video|document|audio', 'url' => ..., 'caption' => ...]].
+     * Foto e vídeo podem ir juntos; documento e áudio, só com o mesmo tipo.
+     */
+    public function mediaGroup(array $items): static
+    {
+        $this->mediaGroup = array_values($items);
+
+        return $this;
+    }
+
+    /** Foto, vídeo ou animação com spoiler (embaçados até tocar). */
+    public function spoiler(bool $spoiler = true): static
+    {
+        $this->hasSpoiler = $spoiler;
+
+        return $this;
+    }
+
+    /** Legenda acima da mídia. */
+    public function captionAbove(bool $above = true): static
+    {
+        $this->captionAbove = $above;
 
         return $this;
     }
@@ -196,9 +324,11 @@ class NotifyTelegram
     }
 
     /** Responde a uma mensagem existente (use o message_id do Telegram). */
-    public function replyTo(int $messageId): static
+    /** Responde a uma mensagem; com $allowWithoutReply, envia mesmo se ela tiver sido apagada. */
+    public function replyTo(int $messageId, bool $allowWithoutReply = false): static
     {
         $this->replyToMessageId = $messageId;
+        $this->allowWithoutReply = $allowWithoutReply ?: null;
 
         return $this;
     }
@@ -260,6 +390,17 @@ class NotifyTelegram
             // Conteúdo
             'message' => $this->message ?: null,
             'image_url' => $this->imageUrl,
+            'document_url' => $this->media['document'] ?? null,
+            'video_url' => $this->media['video'] ?? null,
+            'audio_url' => $this->media['audio'] ?? null,
+            'voice_url' => $this->media['voice'] ?? null,
+            'animation_url' => $this->media['animation'] ?? null,
+            'media_base64' => $this->mediaBase64,
+            'media_type' => $this->mediaType,
+            'filename' => $this->filename,
+            'media_group' => $this->mediaGroup ?: null,
+            'has_spoiler' => $this->hasSpoiler,
+            'show_caption_above_media' => $this->captionAbove,
             'location' => $this->location,
             'contact' => $this->contact,
             'poll' => $this->poll,
@@ -272,6 +413,7 @@ class NotifyTelegram
             'disable_notification' => $this->disableNotification ?: null,
             'protect_content' => $this->protectContent ?: null,
             'reply_to_message_id' => $this->replyToMessageId,
+            'allow_sending_without_reply' => $this->allowWithoutReply,
             'message_thread_id' => $this->messageThreadId,
             'disable_preview' => $this->disablePreview ?: null,
 

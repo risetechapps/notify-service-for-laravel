@@ -38,6 +38,22 @@ class NotifyMail
 
     protected array $attach = [];
 
+    protected array $attachments = [];
+
+    protected array $inline = [];
+
+    protected string|array|null $replyTo = null;
+
+    protected array $cc = [];
+
+    protected array $bcc = [];
+
+    protected ?string $preheader = null;
+
+    protected array $headers = [];
+
+    protected ?string $htmlRaw = null;
+
     /** @var array<int, EmailTable> */
     protected array $tables = [];
 
@@ -145,6 +161,97 @@ class NotifyMail
     /**
      * @param  array{headers?: array<int, string>, rows?: array<int, array<int|string, mixed>>}|EmailTable  $table
      */
+    /**
+     * Anexo por URL com o nome do arquivo (o servidor baixa). Até 10 entre
+     * attachFromUrl() e attachUrl().
+     */
+    public function attachUrl(string $url, ?string $name = null): static
+    {
+        $this->attach[] = array_filter(['url' => $url, 'name' => $name], fn ($v) => $v !== null);
+
+        return $this;
+    }
+
+    /**
+     * Anexo no corpo da requisição, sem URL pública: conteúdo cru (o pacote
+     * converte para base64). Até 5 MB cada e 10 MB somados com o inline().
+     */
+    public function attachData(string $content, string $name, ?string $mime = null): static
+    {
+        $this->attachments[] = array_filter(['name' => $name, 'content' => base64_encode($content), 'mime' => $mime], fn ($v) => $v !== null);
+
+        return $this;
+    }
+
+    /** Anexo a partir de um arquivo local. */
+    public function attachFile(string $path, ?string $name = null, ?string $mime = null): static
+    {
+        return $this->attachData((string) file_get_contents($path), $name ?? basename($path), $mime ?? (mime_content_type($path) ?: null));
+    }
+
+    /**
+     * Imagem embutida, referenciada no HTML como cid:{$cid}. Informe a URL ou
+     * o conteúdo cru (o pacote converte para base64).
+     */
+    public function inline(string $cid, ?string $url = null, ?string $content = null, ?string $mime = null): static
+    {
+        $this->inline[] = array_filter([
+            'cid' => $cid,
+            'url' => $url,
+            'content' => $content !== null ? base64_encode($content) : null,
+            'mime' => $mime,
+        ], fn ($v) => $v !== null);
+
+        return $this;
+    }
+
+    public function replyTo(string $email, ?string $name = null): static
+    {
+        $this->replyTo = $name === null ? $email : ['email' => $email, 'name' => $name];
+
+        return $this;
+    }
+
+    /** Cópias (até 10). Cada cópia conta 1 na cota. */
+    public function cc(string|array $emails): static
+    {
+        $this->cc = array_values(array_unique(array_merge($this->cc, (array) $emails)));
+
+        return $this;
+    }
+
+    /** Cópias ocultas (até 10). Cada cópia conta 1 na cota. */
+    public function bcc(string|array $emails): static
+    {
+        $this->bcc = array_values(array_unique(array_merge($this->bcc, (array) $emails)));
+
+        return $this;
+    }
+
+    /** Texto de prévia, mostrado ao lado do assunto na caixa de entrada. */
+    public function preheader(string $preheader): static
+    {
+        $this->preheader = $preheader;
+
+        return $this;
+    }
+
+    /** Header extra; só X-… (até 10). */
+    public function header(string $name, string $value): static
+    {
+        $this->headers[$name] = $value;
+
+        return $this;
+    }
+
+    /** HTML pronto no lugar do tema (até 256 KB). */
+    public function html(string $html): static
+    {
+        $this->htmlRaw = $html;
+
+        return $this;
+    }
+
     public function addTable(EmailTable|array $table): static
     {
         if (! $table instanceof EmailTable) {
@@ -269,6 +376,14 @@ class NotifyMail
             'signature' => $this->signature,
             'action' => $this->action ?: null,
             'attach' => $this->attach ?: null,
+            'attachments' => $this->attachments ?: null,
+            'inline' => $this->inline ?: null,
+            'reply_to' => $this->replyTo,
+            'cc' => $this->cc ?: null,
+            'bcc' => $this->bcc ?: null,
+            'preheader' => $this->preheader,
+            'headers' => $this->headers ?: null,
+            'html_raw' => $this->htmlRaw,
             'tables' => $this->tables ? array_map(fn ($t) => $t->toArray(), $this->tables) : null,
             'lists' => $this->lists ?: null,
 

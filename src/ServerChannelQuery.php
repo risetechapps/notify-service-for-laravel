@@ -84,84 +84,76 @@ class ServerChannelQuery
         return new ServerDriverConfig($this->apiUrl, $this->apiKey, $this->resource, $id);
     }
 
-    public function edit(string $text, ?string $parseMode = null): array
+    /**
+     * Edita o texto da mensagem enviada (Telegram, Slack, Discord e WhatsApp).
+     * $extra leva os demais campos do canal (title, fields, embeds, buttons…).
+     * No WhatsApp, só texto e até 15 minutos depois do envio.
+     */
+    public function edit(string $text, ?string $parseMode = null, array $extra = []): array
     {
-        $id = $this->id;
+        $field = $this->resource === 'whatsapp' ? 'content' : 'message';
 
-        if ($id === null) {
-            return ['status' => false, 'message' => ucfirst($this->resource).' id is required to edit.', 'http' => 0];
-        }
-
-        $payload = ['notification_id' => $id, 'text' => $text];
-
-        if ($parseMode !== null) {
-            $payload['parse_mode'] = $parseMode;
-        }
-
-        $response = $this->http()->post("/api/v1/{$this->resource}/messages/edit", $payload);
-
-        return [
-            'status' => $response->json('status', false),
-            'message' => $response->json('message'),
-            'http' => $response->status(),
-        ];
+        return $this->action('edit', [$field => $text, 'parse_mode' => $parseMode, ...$extra]);
     }
 
+    /** Apaga a mensagem enviada (Telegram, Slack, Discord e WhatsApp; no WhatsApp, até 2 dias). */
     public function delete(): array
     {
-        $id = $this->id;
-
-        if ($id === null) {
-            return ['status' => false, 'message' => ucfirst($this->resource).' id is required to delete.', 'http' => 0];
-        }
-
-        $response = $this->http()->post("/api/v1/{$this->resource}/messages/delete", [
-            'notification_id' => $id,
-        ]);
-
-        return [
-            'status' => $response->json('status', false),
-            'message' => $response->json('message'),
-            'http' => $response->status(),
-        ];
+        return $this->action('delete');
     }
 
-    public function editCaption(string $caption): array
+    /** Telegram: edita a legenda da mídia. */
+    public function editCaption(string $caption, ?string $parseMode = null): array
     {
-        $id = $this->id;
-
-        if ($id === null) {
-            return ['status' => false, 'message' => ucfirst($this->resource).' id is required to edit caption.', 'http' => 0];
-        }
-
-        $response = $this->http()->post("/api/v1/{$this->resource}/messages/edit-caption", [
-            'notification_id' => $id,
-            'caption' => $caption,
-        ]);
-
-        return [
-            'status' => $response->json('status', false),
-            'message' => $response->json('message'),
-            'http' => $response->status(),
-        ];
+        return $this->action('edit-caption', ['message' => $caption, 'parse_mode' => $parseMode]);
     }
 
+    /** Telegram: troca a mídia (photo, video, document, audio ou animation), com legenda opcional. */
+    public function editMedia(string $url, string $type, ?string $caption = null, bool $spoiler = false): array
+    {
+        return $this->action('edit-media', ['media_url' => $url, 'media_type' => $type, 'message' => $caption, 'has_spoiler' => $spoiler ?: null]);
+    }
+
+    /** Telegram: troca os botões; [] remove todos. */
+    public function editButtons(array $buttons): array
+    {
+        return $this->action('edit-buttons', ['buttons' => $buttons]);
+    }
+
+    /** Fixa a mensagem (Telegram e Slack). $disableNotification vale só no Telegram. */
     public function pin(bool $disableNotification = false): array
     {
-        $id = $this->id;
+        return $this->action('pin', $this->resource === 'telegram' ? ['disable_notification' => $disableNotification] : []);
+    }
 
-        if ($id === null) {
-            return ['status' => false, 'message' => ucfirst($this->resource).' id is required to pin.', 'http' => 0];
+    /** Desafixa a mensagem (Telegram e Slack). */
+    public function unpin(): array
+    {
+        return $this->action('unpin');
+    }
+
+    /** Slack: reage com um emoji (ex.: thumbsup); $remove tira a reação. */
+    public function react(string $emoji, bool $remove = false): array
+    {
+        return $this->action('react', ['emoji' => $emoji, 'remove' => $remove ?: null]);
+    }
+
+    /** POST /api/v1/{canal}/messages/{acao} sobre a notificação deste query. */
+    protected function action(string $action, array $payload = []): array
+    {
+        if ($this->id === null) {
+            return ['status' => false, 'message' => ucfirst($this->resource)." id is required to {$action}.", 'http' => 0];
         }
 
-        $response = $this->http()->post("/api/v1/{$this->resource}/messages/pin", [
-            'notification_id' => $id,
-            'disable_notification' => $disableNotification,
-        ]);
+        $response = $this->http()->post(
+            "/api/v1/{$this->resource}/messages/{$action}",
+            ['notification_id' => $this->id, ...array_filter($payload, fn ($v) => $v !== null)],
+        );
 
         return [
             'status' => $response->json('status', false),
             'message' => $response->json('message'),
+            'errors' => $response->json('errors'),
             'http' => $response->status(),
         ];
     }

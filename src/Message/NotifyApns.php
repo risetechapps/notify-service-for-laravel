@@ -48,13 +48,33 @@ class NotifyApns
 
     protected ?int $badge = null;
 
-    protected ?string $sound = null;
+    protected string|array|null $sound = null;
 
     protected array $data = [];
 
     protected ?string $category = null;
 
     protected ?string $threadId = null;
+
+    protected ?string $image = null;
+
+    protected ?string $interruptionLevel = null;
+
+    protected ?float $relevanceScore = null;
+
+    protected ?int $ttl = null;
+
+    protected ?string $environment = null;
+
+    protected ?string $collapseId = null;
+
+    protected ?string $topic = null;
+
+    protected ?int $priority = null;
+
+    protected ?bool $contentAvailable = null;
+
+    protected ?bool $mutableContent = null;
 
     protected array $tags = [];
 
@@ -134,6 +154,96 @@ class NotifyApns
     }
 
     /**
+     * Som crítico (toca mesmo no silencioso; exige o entitlement da Apple).
+     * Volume de 0 a 1.
+     */
+    public function criticalSound(string $name = 'default', float $volume = 1.0): static
+    {
+        $this->sound = ['name' => $name, 'critical' => true, 'volume' => $volume];
+
+        return $this;
+    }
+
+    /** Imagem (URL), lida pela Notification Service Extension do app. Liga o mutable-content. */
+    public function image(string $url): static
+    {
+        $this->image = $url;
+
+        return $this;
+    }
+
+    /** passive, active, time-sensitive ou critical. */
+    public function interruptionLevel(string $level): static
+    {
+        $this->interruptionLevel = $level;
+
+        return $this;
+    }
+
+    /** De 0 a 1: ordem no resumo de notificações. */
+    public function relevanceScore(float $score): static
+    {
+        $this->relevanceScore = $score;
+
+        return $this;
+    }
+
+    /** Segundos que a Apple guarda o push com o aparelho desligado (até 30 dias). */
+    public function ttl(int $seconds): static
+    {
+        $this->ttl = $seconds;
+
+        return $this;
+    }
+
+    /** sandbox ou production: escolhe o servidor da Apple neste envio. */
+    public function environment(string $environment): static
+    {
+        $this->environment = $environment;
+
+        return $this;
+    }
+
+    /** Push com o mesmo collapse_id substitui o anterior no aparelho (até 64). */
+    public function collapseId(string $collapseId): static
+    {
+        $this->collapseId = $collapseId;
+
+        return $this;
+    }
+
+    /** Bundle ID, no lugar do da configuração. */
+    public function topic(string $topic): static
+    {
+        $this->topic = $topic;
+
+        return $this;
+    }
+
+    /** 10 (imediato) ou 5 (economiza bateria). */
+    public function priority(int $priority): static
+    {
+        $this->priority = $priority;
+
+        return $this;
+    }
+
+    /** Push silencioso (sem title e body). */
+    public function contentAvailable(bool $contentAvailable = true): static
+    {
+        $this->contentAvailable = $contentAvailable;
+
+        return $this;
+    }
+
+    public function mutableContent(bool $mutableContent = true): static
+    {
+        $this->mutableContent = $mutableContent;
+
+        return $this;
+    }
+
+    /**
      * Adiciona tag(s) para agrupar/filtrar. Aceita string ou array; acumula
      * entre chamadas e é mesclada com as tags default do config.
      */
@@ -179,6 +289,16 @@ class NotifyApns
             'data' => $this->data ?: null,
             'category' => $this->category,
             'thread_id' => $this->threadId,
+            'image' => $this->image,
+            'interruption_level' => $this->interruptionLevel,
+            'relevance_score' => $this->relevanceScore,
+            'ttl' => $this->ttl,
+            'environment' => $this->environment,
+            'collapse_id' => $this->collapseId,
+            'topic' => $this->topic,
+            'priority' => $this->priority,
+            'content_available' => $this->contentAvailable,
+            'mutable_content' => $this->mutableContent,
             'tag' => $tags ?: null,
             'config_id' => $this->configId ?: config('notify.apns.config_id'),
             'webhook_url' => $this->webhookUrl,

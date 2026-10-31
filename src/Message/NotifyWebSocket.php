@@ -7,14 +7,16 @@ use RiseTechApps\Notify\Message\Concerns\HasSendOptions;
 /**
  * Evento WebSocket (tempo real) enviado ao servidor via /api/v1/send/websocket.
  *
- * Dispara um evento em um canal público, privado ou de presença. O servidor enfileira
- * (resposta 202 com notification_id) e devolve status pelo webhook.
+ * Dispara um evento em um ou mais canais (público, privado, de presença ou
+ * criptografado) do app do Pusher, Soketi ou Reverb da sua configuração. O
+ * servidor enfileira (resposta 202 com notification_id) e devolve status pelo
+ * webhook.
  *
  * - config_id: se não definido, usa o default de config('notify.websocket.config_id').
  * - tag: as tags da mensagem são mescladas com as default de config('notify.websocket.tags').
  *
  *   (new NotifyWebSocket)
- *       ->channel("private-user.{$id}")
+ *       ->channel("user.{$id}")
  *       ->event('OrderStatusUpdated')
  *       ->data(['order_id' => 1234, 'status' => 'shipped'])
  *       ->private()
@@ -34,6 +36,12 @@ class NotifyWebSocket
 
     protected bool $presence = false;
 
+    protected array $channels = [];
+
+    protected ?string $socketId = null;
+
+    protected ?bool $notifyMeta = null;
+
     protected array $tags = [];
 
     protected ?string $configId = null;
@@ -43,6 +51,33 @@ class NotifyWebSocket
     public function channel(string $channel): static
     {
         $this->channel = $channel;
+
+        return $this;
+    }
+
+    /**
+     * Vários canais numa chamada (até 100). Cada canal conta 1 na cota. Canal
+     * private-encrypted- vai sozinho.
+     */
+    public function channels(array $channels): static
+    {
+        $this->channels = array_values($channels);
+
+        return $this;
+    }
+
+    /** Conexão de quem disparou (ex.: 123.456), que não recebe o próprio evento. */
+    public function except(string $socketId): static
+    {
+        $this->socketId = $socketId;
+
+        return $this;
+    }
+
+    /** false: o data vai sem o _notify (horário, canal e evento). */
+    public function notifyMeta(bool $notifyMeta = true): static
+    {
+        $this->notifyMeta = $notifyMeta;
 
         return $this;
     }
@@ -62,7 +97,7 @@ class NotifyWebSocket
     }
 
     /**
-     * Marca o canal como privado (prefixo "private-" aplicado automaticamente pelo servidor).
+     * Canal privado: o servidor acrescenta "private-" quando o canal ainda não tem.
      */
     public function private(bool $private = true): static
     {
@@ -72,7 +107,7 @@ class NotifyWebSocket
     }
 
     /**
-     * Marca o canal como presence (prefixo "presence-" aplicado automaticamente pelo servidor).
+     * Canal de presença: o servidor acrescenta "presence-" quando o canal ainda não tem.
      */
     public function presence(bool $presence = true): static
     {
@@ -119,7 +154,10 @@ class NotifyWebSocket
         )));
 
         return array_filter([
-            'channel' => $this->channel ?: null,
+            'channel' => $this->channels ? null : ($this->channel ?: null),
+            'channels' => $this->channels ?: null,
+            'socket_id' => $this->socketId,
+            'notify_meta' => $this->notifyMeta,
             'event' => $this->event ?: null,
             'data' => $this->data ?: null,
             'private' => $this->private ?: null,

@@ -38,6 +38,22 @@ class NotifyWhatsApp
 
     protected ?array $poll = null;
 
+    protected ?string $groupId = null;
+
+    protected bool $mentionAll = false;
+
+    protected array $mentions = [];
+
+    protected ?string $mediaBase64 = null;
+
+    protected ?array $location = null;
+
+    protected array $contacts = [];
+
+    protected ?bool $linkPreview = null;
+
+    protected ?bool $typing = null;
+
     protected array $tags = [];
 
     protected ?string $configId = null;
@@ -57,7 +73,94 @@ class NotifyWhatsApp
     /** Se a mensagem já tem destino (->to()); o canal só usa o do notifiable quando não tem. */
     public function hasRecipient(): bool
     {
-        return $this->to !== '';
+        return $this->to !== '' || $this->groupId !== null;
+    }
+
+    /**
+     * Envia para um grupo (…@g.us, ver ServerDriverConfig::whatsappGroups()) no
+     * lugar de um número. Conta 1 na cota.
+     */
+    public function group(string $groupId): static
+    {
+        $this->groupId = $groupId;
+
+        return $this;
+    }
+
+    /** No grupo: menciona todos os participantes. */
+    public function mentionAll(bool $mentionAll = true): static
+    {
+        $this->mentionAll = $mentionAll;
+
+        return $this;
+    }
+
+    /** No grupo: menciona estes números (até 50). */
+    public function mention(string|array $phones): static
+    {
+        $this->mentions = array_values(array_unique(array_merge($this->mentions, (array) $phones)));
+
+        return $this;
+    }
+
+    /**
+     * Mídia no corpo da requisição (até 8 MB), sem URL pública: conteúdo cru
+     * (o pacote converte para base64). Tipo: image, video, document ou audio.
+     */
+    public function mediaData(string $content, string $type, ?string $fileName = null): static
+    {
+        $this->mediaBase64 = base64_encode($content);
+        $this->mediaUrl = null;
+        $this->mediaType = $type;
+        $this->fileName = $fileName;
+
+        return $this;
+    }
+
+    /** Mídia a partir de um arquivo local; o tipo é deduzido do mime quando não informado. */
+    public function mediaFile(string $path, ?string $type = null): static
+    {
+        $mime = (string) mime_content_type($path);
+        $type ??= match (true) {
+            str_starts_with($mime, 'image/') => 'image',
+            str_starts_with($mime, 'video/') => 'video',
+            str_starts_with($mime, 'audio/') => 'audio',
+            default => 'document',
+        };
+
+        return $this->mediaData((string) file_get_contents($path), $type, basename($path));
+    }
+
+    /** Pino no mapa. */
+    public function location(float $latitude, float $longitude, ?string $name = null, ?string $address = null): static
+    {
+        $this->location = array_filter(['latitude' => $latitude, 'longitude' => $longitude, 'name' => $name, 'address' => $address], fn ($v) => $v !== null);
+
+        return $this;
+    }
+
+    /** Cartão de contato (até 10 por mensagem). */
+    public function contact(string $name, string $phone, ?string $organization = null, ?string $email = null): static
+    {
+        $this->contacts[] = array_filter(['name' => $name, 'phone' => $phone, 'organization' => $organization, 'email' => $email], fn ($v) => $v !== null);
+
+        return $this;
+    }
+
+    /** false desliga a prévia do link do texto. */
+    public function linkPreview(bool $linkPreview = true): static
+    {
+        $this->linkPreview = $linkPreview;
+
+        return $this;
+    }
+
+    /** false desliga o "digitando…" antes da mensagem. */
+    public function typing(bool $typing = true): static
+    {
+        $this->typing = $typing;
+
+        return $this;
     }
 
     /** Texto (ou a legenda da mídia). Até 4.096 caracteres. */
@@ -144,9 +247,17 @@ class NotifyWhatsApp
         $tags = array_values(array_unique(array_merge((array) config('notify.whatsapp.tags', []), $this->tags)));
 
         return array_filter([
-            'to' => $this->to,
+            'to' => $this->groupId ? null : ($this->to !== '' ? $this->to : null),
+            'group_id' => $this->groupId,
+            'mention_all' => $this->groupId && $this->mentionAll ? true : null,
+            'mentions' => $this->groupId && $this->mentions ? $this->mentions : null,
             'content' => $this->poll ? null : ($this->content !== '' ? $this->content : null),
             'media_url' => $this->mediaUrl,
+            'media_base64' => $this->mediaBase64,
+            'location' => $this->location,
+            'contacts' => $this->contacts ?: null,
+            'link_preview' => $this->linkPreview,
+            'typing' => $this->typing,
             'media_type' => $this->mediaType,
             'file_name' => $this->fileName,
             'poll' => $this->poll,
