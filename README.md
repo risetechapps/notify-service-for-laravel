@@ -53,17 +53,9 @@ Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **
 
 ## Instalação
 
-O pacote é distribuído pelo Repman da Rise Tech. Declare o repositório no `composer.json`
-da aplicação e configure o token:
-
-```json
-"repositories": [
-    { "type": "composer", "url": "https://risetechapps-repo-repman.risetech.app.br" }
-]
-```
+O pacote é distribuído pelo Packagist:
 
 ```bash
-composer config --auth http-basic.risetechapps-repo-repman.risetech.app.br token SEU_TOKEN
 composer require risetechapps/notify-service-for-laravel:^1.0
 ```
 
@@ -88,8 +80,10 @@ Adicione as variáveis ao seu `.env`:
 NOTIFY_SERVICE_KEY=sua-api-key
 NOTIFY_SERVICE_WEBHOOK=https://sua-app.com/notify/webhook
 
-# Segredo usado para validar a assinatura dos callbacks recebidos (obrigatório)
-NOTIFY_SERVICE_WEBHOOK_SECRET=seu-segredo
+# Segredo(s) para validar a assinatura dos callbacks recebidos (obrigatório).
+# O da conta (painel → Configurações → Assinatura dos webhooks) e, se usar os
+# webhooks da conta (painel → Webhooks), o de cada endpoint, separados por vírgula.
+NOTIFY_SERVICE_WEBHOOK_SECRET=segredo-da-conta,segredo-do-endpoint
 
 # Rotas automáticas de webhook (opcional)
 NOTIFY_SERVICE_ROUTES=true

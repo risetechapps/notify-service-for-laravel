@@ -50,7 +50,7 @@ Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/
 
 ## [1.0.0] - 2026-10-22
 
-Primeira versão oficial, alinhada ao notify-server 1.0.0. As versões anteriores (até a 2.0.0) foram pré-lançamentos internos e saíram do histórico; o pacote passa a ser distribuído pelo Repman.
+Primeira versão oficial, alinhada ao notify-server 1.0.0. As versões anteriores (até a 2.0.0) foram pré-lançamentos internos e saíram do histórico; o pacote passa a ser distribuído pelo Packagist.
 
 ### O que a versão inclui
 
@@ -63,7 +63,7 @@ Primeira versão oficial, alinhada ao notify-server 1.0.0. As versões anteriore
 
 ### Atualizando a partir da 2.0.0 (pré-lançamento)
 
-Troque a restrição no `composer.json` para `^1.0` e adicione o Repman em `repositories`, como nos outros pacotes `risetechapps`.
+Troque a restrição no `composer.json` para `^1.0`. O pacote vem do Packagist: se a aplicação declarava um repositório próprio para ele em `repositories`, pode removê-lo.
 
 #### Adicionado
 
