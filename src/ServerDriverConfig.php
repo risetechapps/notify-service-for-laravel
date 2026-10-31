@@ -226,9 +226,31 @@ class ServerDriverConfig
         return $this->credential('credentials_json', $json);
     }
 
+    /**
+     * Caminho de um arquivo NO SERVIDOR do Notify (não na sua máquina). Para
+     * mandar a sua chave .p8, use ->keyFile() ou ->keyContent().
+     */
     public function keyPath(string $path): static
     {
         return $this->credential('key_path', $path);
+    }
+
+    /** Conteúdo da chave .p8 do APNs (-----BEGIN PRIVATE KEY-----…). */
+    public function keyContent(string $p8): static
+    {
+        return $this->credential('key_content', $p8);
+    }
+
+    /** Lê a chave .p8 do APNs deste caminho local e envia o conteúdo em `key_content`. */
+    public function keyFile(string $path): static
+    {
+        $contents = @file_get_contents($path);
+
+        if ($contents === false || trim($contents) === '') {
+            throw new \InvalidArgumentException("APNs key file not found or unreadable: {$path}");
+        }
+
+        return $this->keyContent($contents);
     }
 
     public function keyId(string $keyId): static

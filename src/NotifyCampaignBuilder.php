@@ -129,6 +129,10 @@ class NotifyCampaignBuilder
 
     protected array $emailLists = [];
 
+    protected array $emailAttach = [];
+
+    protected ?string $emailAppName = null;
+
     protected string $emailTheme = 'default';
 
     protected ?string $emailSignature = null;
@@ -502,6 +506,22 @@ class NotifyCampaignBuilder
         return $this;
     }
 
+    /** Nome do app no e-mail da campanha (padrão: notify.mail.app_name, senão o APP_NAME). */
+    public function appName(string $appName): static
+    {
+        $this->emailAppName = $appName;
+
+        return $this;
+    }
+
+    /** Anexos do e-mail da campanha por URL pública (até 10). */
+    public function attachUrl(string ...$urls): static
+    {
+        $this->emailAttach = array_values(array_unique([...$this->emailAttach, ...$urls]));
+
+        return $this;
+    }
+
     public function addList(string $type, array $items): static
     {
         $this->emailLists[] = ['type' => $type, 'items' => $items];
@@ -715,13 +735,14 @@ class NotifyCampaignBuilder
             'subject' => $this->emailSubject,
             'subject_message' => $this->emailSubjectMessage,
             'theme' => $this->emailTheme,
-            'app_name' => config('notify.mail.app_name', config('app.name')),
+            'app_name' => $this->emailAppName ?: config('notify.mail.app_name') ?: config('app.name'),
             'line' => $this->emailLine,
             'line_header' => $this->emailLineHeader ?: null,
             'line_footer' => $this->emailLineFooter ?: null,
             'action' => $this->emailAction ?: null,
             'tables' => $this->emailTables ?: null,
             'lists' => $this->emailLists ?: null,
+            'attach' => $this->emailAttach ?: null,
             'signature' => $this->emailSignature,
         ], fn ($v) => ! is_null($v));
     }
@@ -734,7 +755,7 @@ class NotifyCampaignBuilder
             'name_from' => $this->emailNameFrom ?: config('notify.mail.from.name'),
             'subject' => $this->emailSubject,
             'subject_message' => $this->emailSubjectMessage,
-            'app_name' => config('notify.mail.app_name', config('app.name')),
+            'app_name' => $this->emailAppName ?: config('notify.mail.app_name') ?: config('app.name'),
             'html_raw' => file_get_contents($html),
         ], fn ($v) => ! is_null($v));
     }

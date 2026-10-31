@@ -9,25 +9,42 @@ use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Valida a assinatura HMAC dos callbacks enviados pelo servidor de notificações.
+ * Valida a assinatura HMAC-SHA256 dos callbacks enviados pelo servidor.
  *
- * O servidor assina o material "{timestamp}.{corpo bruto}" com HMAC-SHA256 e envia
- * o resultado no header:
+ * Todo webhook do servidor (webhook_url da requisição, do número, da conversa
+ * e os webhooks da conta) sai no formato do api-key:
  *
- *   X-Notify-Signature: t=1750000000,v1=9f86d081884c7d65...
+ *   X-Webhook-Id:        evt_…  (igual num reenvio)
+ *   X-Webhook-Event:     notification.sent
+ *   X-Webhook-Timestamp: 1750000000
+ *   X-Webhook-Signature: sha256=<hex>   HMAC de "{timestamp}.{corpo bruto}"
+ *
+ * Segredo: o da conta (painel → Configurações → Assinatura dos webhooks) no
+ * webhook_url, no número e na conversa; o de cada endpoint nos webhooks da
+ * conta (painel → Webhooks).
+ *
+ * O formato do servidor 1.0.0 (X-Notify-Signature: t=…,v1=…, HMAC de
+ * "{t}.{corpo bruto}") segue aceito durante a transição.
  *
  * A validação usa o corpo BRUTO da requisição ($request->getContent()). Nunca
  * reserialize o JSON (json_encode($request->all())) — a ordem das chaves e o escape
  * de "/" e unicode mudam os bytes e a assinatura nunca confere.
  *
  * Configuração:
- *   notify.webhook_secret     segredo compartilhado com o servidor (NOTIFY_SERVICE_WEBHOOK_SECRET)
+ *   notify.webhook_secret     segredo(s), separados por vírgula: o da conta e
+ *                             o de cada endpoint da conta; qualquer um que
+ *                             confira vale (também serve para rotação)
  *   notify.webhook_verify     true (default) valida; false desliga a validação
  *   notify.webhook_tolerance  janela anti-replay em segundos (default 300)
  */
 class VerifyNotifySignature
 {
-    public const HEADER = 'X-Notify-Signature';
+    public const HEADER = 'X-Webhook-Signature';
+
+    public const TIMESTAMP_HEADER = 'X-Webhook-Timestamp';
+
+    /** Header do servidor 1.0.0. */
+    public const LEGACY_HEADER = 'X-Notify-Signature';
 
     public function handle(Request $request, Closure $next): Response
     {
@@ -35,42 +52,83 @@ class VerifyNotifySignature
             return $next($request);
         }
 
-        $secret = (string) config('notify.webhook_secret', '');
+        $secrets = self::secrets();
 
-        if ($secret === '') {
+        if ($secrets === []) {
             Log::error('Notify: webhook recebido mas notify.webhook_secret não está configurado. Defina NOTIFY_SERVICE_WEBHOOK_SECRET ou desligue a validação com notify.webhook_verify=false.');
 
             return $this->deny('Webhook secret not configured');
         }
 
+        $body = $request->getContent();
         $header = $request->header(self::HEADER);
 
-        if (! is_string($header) || $header === '') {
+        if (is_string($header) && $header !== '') {
+            $timestamp = $request->header(self::TIMESTAMP_HEADER);
+
+            if (! preg_match('/^sha256=([0-9a-fA-F]{64})$/', trim($header), $m) || ! is_string($timestamp) || ! preg_match('/^\d+$/', $timestamp)) {
+                return $this->deny('Malformed signature header');
+            }
+
+            if (! $this->withinTolerance((int) $timestamp)) {
+                return $this->deny('Signature timestamp outside tolerance');
+            }
+
+            return $this->matches($timestamp.'.'.$body, [strtolower($m[1])], $secrets)
+                ? $next($request)
+                : $this->deny('Invalid signature');
+        }
+
+        $legacy = $request->header(self::LEGACY_HEADER);
+
+        if (! is_string($legacy) || $legacy === '') {
             return $this->deny('Missing signature header');
         }
 
-        [$timestamp, $signatures] = $this->parse($header);
+        [$timestamp, $signatures] = $this->parse($legacy);
 
         if ($timestamp === null || $signatures === []) {
             return $this->deny('Malformed signature header');
         }
 
-        $tolerance = (int) config('notify.webhook_tolerance', 300);
-
-        if ($tolerance > 0 && abs(time() - $timestamp) > $tolerance) {
+        if (! $this->withinTolerance($timestamp)) {
             return $this->deny('Signature timestamp outside tolerance');
         }
 
-        // Corpo bruto — não reserializar.
-        $expected = hash_hmac('sha256', $timestamp.'.'.$request->getContent(), $secret);
+        return $this->matches($timestamp.'.'.$body, $signatures, $secrets)
+            ? $next($request)
+            : $this->deny('Invalid signature');
+    }
 
-        foreach ($signatures as $signature) {
-            if (hash_equals($expected, $signature)) {
-                return $next($request);
+    /** Segredos configurados: string separada por vírgula ou array. */
+    public static function secrets(): array
+    {
+        $value = config('notify.webhook_secret', '');
+        $list = is_array($value) ? $value : explode(',', (string) $value);
+
+        return array_values(array_filter(array_map(fn ($s) => trim((string) $s), $list), fn ($s) => $s !== ''));
+    }
+
+    protected function matches(string $material, array $signatures, array $secrets): bool
+    {
+        foreach ($secrets as $secret) {
+            $expected = hash_hmac('sha256', $material, $secret);
+
+            foreach ($signatures as $signature) {
+                if (hash_equals($expected, $signature)) {
+                    return true;
+                }
             }
         }
 
-        return $this->deny('Invalid signature');
+        return false;
+    }
+
+    protected function withinTolerance(int $timestamp): bool
+    {
+        $tolerance = (int) config('notify.webhook_tolerance', 300);
+
+        return $tolerance <= 0 || abs(time() - $timestamp) <= $tolerance;
     }
 
     /**

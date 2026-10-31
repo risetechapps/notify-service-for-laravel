@@ -9,7 +9,9 @@ use Illuminate\Foundation\Events\Dispatchable;
  * campanha para o webhook do pacote.
  *
  * O pacote não persiste nada localmente — escute este evento para reagir.
- * O payload completo (total, sent, failed, contact_updates, etc.) fica em $payload.
+ * $event traz o nome (campaign.created, campaign.started, campaign.completed,
+ * campaign.paused…). O payload completo (total, sent, failed, progress e, no
+ * completed, skipped, started_at e finished_at) fica em $payload.
  */
 class NotifyCampaignWebhookEvent
 {
@@ -19,5 +21,6 @@ class NotifyCampaignWebhookEvent
         public ?string $campaignId,
         public ?string $status,
         public array $payload = [],
+        public ?string $event = null,
     ) {}
 }

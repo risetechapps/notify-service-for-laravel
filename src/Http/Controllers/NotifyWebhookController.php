@@ -13,7 +13,7 @@ use RiseTechApps\Notify\Events\NotifyWhatsAppEvent;
 /**
  * Recebe callbacks de status do servidor de notificações e os repassa como
  * eventos Laravel. O pacote não persiste nada localmente — escute os eventos
- * (NotifyWebhookEvent / NotifyCampaignWebhookEvent) para reagir.
+ * (NotifyWebhookEvent / NotifyCampaignWebhookEvent / NotifyWhatsAppEvent).
  *
  * As rotas são registradas automaticamente com notify.routes = true, já protegidas
  * pelo middleware de assinatura HMAC (VerifyNotifySignature). Para registrar
@@ -23,53 +23,51 @@ use RiseTechApps\Notify\Events\NotifyWhatsAppEvent;
  *       ->middleware('notify.signature');
  *   Route::post('/notify/webhook/campaign', [NotifyWebhookController::class, 'campaign'])
  *       ->middleware('notify.signature');
+ *   Route::post('/notify/webhook/whatsapp', [NotifyWebhookController::class, 'whatsapp'])
+ *       ->middleware('notify.signature');
  *
- * Formato enviado pelo servidor para notificação individual:
+ * Qualquer uma das três rotas aceita qualquer evento e o encaminha pelo nome:
+ * útil para os webhooks da conta (painel → Webhooks), que mandam todos os
+ * eventos assinados para uma URL só.
+ *
+ * Notificação (webhook_url da requisição):
  * {
- *   "event": "created|sending|sent|delivered|error|failed|cancelled",
- *   "channel": "telegram",        // vira $type no NotifyWebhookEvent
+ *   "event": "notification.sent",   // notification.created|sending|sent|delivered|error|failed|cancelled…
+ *   "channel": "telegram",          // vira $type no NotifyWebhookEvent
  *   "notification_id": "uuid",
- *   "provider_id": "11",          // id da mensagem no provedor (ex.: message_id do Telegram)
+ *   "provider_id": "11",            // id da mensagem no provedor
  *   "status": "sent",
  *   "tag": ["pedido"],
- *   "error": "mensagem de erro"   // opcional, em event=error
+ *   "timestamp": "2026-10-31T12:00:00-03:00",
+ *   "test": true,                   // só no modo de teste
+ *   "error": "mensagem de erro"     // em notification.error / failed
  * }
  *
- * Formato esperado para campanha:
+ * Campanha: campaign.created | campaign.started | campaign.completed (com
+ * sent, failed, skipped, started_at e finished_at) e paused, cancelled etc.
  * {
- *   "campaign_id": "uuid",
- *   "status": "processing|paused|completed|failed",
- *   "total": 1000, "sent": 800, "failed": 50,
- *   "contact_updates": [ ... ]    // opcional
+ *   "event": "campaign.completed", "campaign_id": "uuid", "channel": "sms",
+ *   "status": "completed", "total": 1000, "sent": 950, "failed": 50, "progress": 100
  * }
+ *
+ * Webhooks da conta: o mesmo conteúdo dentro de {id, event, created_at, data};
+ * o envelope é aberto antes de disparar o evento (o `id` vira `delivery_id`).
  */
 class NotifyWebhookController extends Controller
 {
     /**
-     * Repassa o callback de uma notificação individual como NotifyWebhookEvent.
-     *
-     * Campanha sem ->webhookUrl() usa o notify.webhook, que costuma apontar
-     * para esta rota: o callback dela (com campaign_id e sem notification_id)
-     * segue para campaign().
+     * Repassa o callback de uma notificação como NotifyWebhookEvent. Eventos de
+     * campanha e do WhatsApp que chegarem aqui seguem para o método certo.
      */
     public function notification(Request $request): JsonResponse
     {
-        if ($request->filled('campaign_id') && ! $request->filled('notification_id')) {
-            return $this->campaign($request);
-        }
+        $payload = self::unwrap($request->all());
 
-        Event::dispatch(new NotifyWebhookEvent(
-            event: $request->input('event'),
-            notificationId: $request->input('notification_id'),
-            providerId: $request->input('provider_id'),
-            status: $request->input('status'),
-            // O servidor manda o canal em `channel`; `type` fica para quem
-            // ainda recebe o formato antigo.
-            type: $request->input('channel', $request->input('type')),
-            payload: $request->all(),
-        ));
-
-        return response()->json(['ok' => true]);
+        return match (self::kind($payload)) {
+            'campaign' => $this->dispatchCampaign($payload),
+            'whatsapp' => $this->dispatchWhatsApp($payload),
+            default => $this->dispatchNotification($payload),
+        };
     }
 
     /**
@@ -77,13 +75,11 @@ class NotifyWebhookController extends Controller
      */
     public function campaign(Request $request): JsonResponse
     {
-        Event::dispatch(new NotifyCampaignWebhookEvent(
-            campaignId: $request->input('campaign_id'),
-            status: $request->input('status'),
-            payload: $request->all(),
-        ));
+        $payload = self::unwrap($request->all());
 
-        return response()->json(['ok' => true]);
+        return self::kind($payload) === 'notification'
+            ? $this->dispatchNotification($payload)
+            : $this->dispatchCampaign($payload);
     }
 
     /**
@@ -93,11 +89,91 @@ class NotifyWebhookController extends Controller
      */
     public function whatsapp(Request $request): JsonResponse
     {
-        $event = (string) $request->input('event', '');
+        $payload = self::unwrap($request->all());
+
+        return match (self::kind($payload)) {
+            'notification' => $this->dispatchNotification($payload),
+            'campaign' => $this->dispatchCampaign($payload),
+            default => $this->dispatchWhatsApp($payload),
+        };
+    }
+
+    /**
+     * Abre o envelope dos webhooks da conta ({id, event, created_at, data}):
+     * o conteúdo de `data` sobe para o nível de cima, com o `event`, o
+     * `timestamp` (created_at) e o `delivery_id` (id). Outros formatos passam
+     * como chegaram.
+     */
+    public static function unwrap(array $payload): array
+    {
+        if (! isset($payload['event'], $payload['data']) || ! is_array($payload['data']) || ! array_key_exists('created_at', $payload)) {
+            return $payload;
+        }
+
+        return [
+            ...$payload['data'],
+            'event' => $payload['event'],
+            'timestamp' => $payload['created_at'],
+            'delivery_id' => $payload['id'] ?? null,
+        ];
+    }
+
+    /** notification | campaign | whatsapp, pelo conteúdo do evento. */
+    public static function kind(array $payload): string
+    {
+        $event = (string) ($payload['event'] ?? '');
+
+        if (filled($payload['notification_id'] ?? null)) {
+            return 'notification';
+        }
+
+        if (str_starts_with($event, 'campaign.') || filled($payload['campaign_id'] ?? null)) {
+            return 'campaign';
+        }
+
+        if (str_starts_with($event, 'whatsapp.') || array_key_exists('event_id', $payload)) {
+            return 'whatsapp';
+        }
+
+        return 'notification';
+    }
+
+    protected function dispatchNotification(array $payload): JsonResponse
+    {
+        Event::dispatch(new NotifyWebhookEvent(
+            event: $payload['event'] ?? null,
+            notificationId: $payload['notification_id'] ?? null,
+            providerId: isset($payload['provider_id']) ? (string) $payload['provider_id'] : null,
+            status: $payload['status'] ?? null,
+            // O servidor manda o canal em `channel`; `type` fica para quem
+            // ainda recebe o formato antigo.
+            type: $payload['channel'] ?? $payload['type'] ?? null,
+            payload: $payload,
+            test: ! empty($payload['test']),
+        ));
+
+        return response()->json(['ok' => true]);
+    }
+
+    protected function dispatchCampaign(array $payload): JsonResponse
+    {
+        Event::dispatch(new NotifyCampaignWebhookEvent(
+            campaignId: $payload['campaign_id'] ?? null,
+            status: $payload['status'] ?? null,
+            payload: $payload,
+            event: $payload['event'] ?? null,
+        ));
+
+        return response()->json(['ok' => true]);
+    }
+
+    protected function dispatchWhatsApp(array $payload): JsonResponse
+    {
+        $event = (string) ($payload['event'] ?? '');
 
         if ($event !== '') {
-            $eventId = $request->input('event_id');
-            NotifyWhatsAppEvent::dispatchOnce($event, $eventId !== null ? (int) $eventId : null, $request->all());
+            $eventId = $payload['event_id'] ?? null;
+            NotifyWhatsAppEvent::dispatchOnce($event, $eventId !== null ? (int) $eventId : null, $payload);
         }
 
         return response()->json(['ok' => true]);

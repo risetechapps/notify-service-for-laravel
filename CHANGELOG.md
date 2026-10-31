@@ -6,14 +6,26 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Não lançado]
 
-Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/31).
+Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/31). Compatível com o notify-server a partir de 007591e (revisão de canais). Atualize antes do deploy do servidor: o formato de assinatura mudou.
 
 ### Corrigido
 
+- **Callbacks recusados com 403 depois do novo servidor.** O `VerifyNotifySignature` só aceitava `X-Notify-Signature: t=…,v1=…`. Agora valida o formato do api-key, que o servidor usa em todos os webhooks (`X-Webhook-Signature: sha256=` + HMAC de `"{X-Webhook-Timestamp}.{corpo}"`, com janela anti-replay), e segue aceitando o formato antigo durante a transição. `notify.webhook_secret` aceita vários segredos separados por vírgula (o da conta e o de cada endpoint).
+- **Campanha de e-mail sem `app_name`.** Com `notify.mail.app_name` vazio (a chave existe no config), o padrão `config('app.name')` não entrava e o servidor recusava a campanha com 422.
+- **Webhooks no envelope chegavam vazios.** O envelope `{id, event, created_at, data}`, agora usado em todos os webhooks do servidor, é aberto antes de disparar o evento; o `id` vai em `payload['delivery_id']`.
 - **Editar mensagem enviada não funcionava.** `edit()` mandava o texto em `text` e `editCaption()` em `caption`, mas o servidor espera `message` (e `content` no WhatsApp): toda edição pelo pacote voltava `422`.
 
 ### Adicionado
 
+- As três rotas de webhook encaminham pelo conteúdo: notificação, `campaign.*` e `whatsapp.*` vão para o evento certo, mesmo chegando na mesma URL.
+- `NotifyWebhookEvent`: `name()`, `is()` (aceita `sent` e `notification.sent`) e `test`. `NotifyCampaignWebhookEvent`: `event`.
+- `NotifyQuery::multi()->add($mensagem)`: mensagens no multicanal, com canal, `config_id`, `webhook_url`, `failover` e modelo de cada uma; `tag()`, `scheduledAt()`, `test()` e `idempotencyKey()`.
+- `batch()` aceita mensagens, inclui o modelo salvo, troca `mail` por `email` e aceita `test => true`.
+- Telegram: `webAppButton()`, `loginButton()`, `copyButton()`, `switchInlineButton()` e `sameRow` em `button()`; enquete com `pollMultipleAnswers()` e `pollOpenPeriod()`.
+- Campanha de e-mail: `appName()`.
+- `tests/E2E`: contrato contra um notify-server de verdade (envio de todos os canais com os campos guardados, lote, multicanal, campanhas, ações, configurações e webhooks assinados de volta). Pulado sem `NOTIFY_E2E_URL`.
+- APNs: `keyContent()` e `keyFile()` (a chave `.p8` vai no corpo; `keyPath()` é um caminho no servidor).
+- Campanha de e-mail: `attachUrl()`.
 - **E-mail:** `cc()`, `bcc()`, `replyTo()`, `preheader()`, `header()`, `html()`, `attachUrl($url, $nome)`, `attachData()`/`attachFile()` (anexo no corpo, sem URL pública) e `inline()` (imagem `cid:`).
 - **APNs:** `image()`, `interruptionLevel()`, `relevanceScore()`, `ttl()`, `environment()`, `collapseId()`, `topic()`, `priority()`, `contentAvailable()`, `mutableContent()` e `criticalSound()`.
 - **Telegram:** `documentUrl()`, `videoUrl()`, `audioUrl()`, `voiceUrl()`, `animationUrl()`, `media()`/`mediaFile()` (arquivo no corpo), `mediaGroup()`, `spoiler()`, `captionAbove()`, `quiz()`, extras da enquete e `replyTo(..., allowWithoutReply: true)`.
@@ -26,6 +38,10 @@ Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/
 - **Webhook:** `apiKeyAuth($token, $header)` e `hmacAuth($segredo)`.
 - **Ações sobre a mensagem enviada:** `unpin()`, `editMedia()` e `editButtons()` (Telegram), `pin()`, `unpin()` e `react()` (Slack), `edit()` e `delete()` no WhatsApp, e `edit(..., extra: [...])` para os demais campos. As ações devolvem também `errors`.
 - **Configurações:** `telegramChats()`, `slackChannels()` e `whatsappGroups()`.
+
+### Documentação
+
+- README: assinatura, formatos e roteamento dos webhooks, nomes `notification.*`, eventos de campanha, multicanal e lote com mensagens, canais só com configuração do cliente, campos do WebSocket e do APNs.
 
 ### Alterado
 

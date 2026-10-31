@@ -3,6 +3,7 @@
 namespace RiseTechApps\Notify;
 
 use Illuminate\Support\Facades\Http;
+use RiseTechApps\Notify\Support\MessageChannel;
 
 /**
  * Fluent builder para consultas na API do servidor.
@@ -154,19 +155,26 @@ class ServerQuery
 
     /**
      * Até 1.000 mensagens de um canal numa chamada (POST /send/batch). Cada
-     * item é o corpo do envio individual do canal; $options leva o que vale
-     * para o lote (webhook_url, tag, config_id, failover, scheduled_at).
-     * O lote entra inteiro ou não entra. Devolve os notification_ids na ordem.
+     * item é uma mensagem (NotifySms, NotifyMail…) ou o corpo cru do envio
+     * individual; $options leva o que vale para o lote (defaults, webhook_url,
+     * tag, config_id, failover, scheduled_at, timezone) e `test => true` liga o
+     * modo de teste. O lote entra inteiro ou não entra. Devolve os
+     * notification_ids na ordem. `mail` vira `email`, o nome do lote.
      */
     public function batch(string $channel, array $messages, array $options = [], ?string $idempotencyKey = null): array
     {
-        $request = $this->http();
+        $test = ! empty($options['test']);
+        unset($options['test']);
 
-        if ($idempotencyKey !== null) {
-            $request = $request->withHeaders(['Idempotency-Key' => $idempotencyKey]);
-        }
+        $request = $this->http()->withHeaders(array_filter([
+            'Idempotency-Key' => $idempotencyKey,
+            'X-Notify-Test' => $test ? 'true' : null,
+        ]));
 
-        $response = $request->post('/api/v1/send/batch', ['channel' => $channel, 'messages' => array_values($messages)] + $options);
+        $response = $request->post('/api/v1/send/batch', [
+            'channel' => MessageChannel::normalize($channel),
+            'messages' => array_values(array_map(fn ($m) => MessageChannel::data($m), $messages)),
+        ] + $options);
 
         return ($response->json() ?? []) + ($response->failed() ? ['http' => $response->status()] : []);
     }

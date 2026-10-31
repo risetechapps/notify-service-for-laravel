@@ -43,10 +43,14 @@ class NotifyQuery
      * @example
      * NotifyQuery::multi([
      *     ['channel' => 'sms',   'data' => ['to' => '+5511999999999', 'content' => 'Olá!']],
-     *     ['channel' => 'email', 'data' => ['to' => 'user@ex.com',   'subject' => 'Teste']],
      * ])->send();
+     *
+     * NotifyQuery::multi()
+     *     ->add((new NotifySms)->to('+5511999999999')->content('Olá!'))
+     *     ->add((new NotifyTelegram)->chatId('123')->message('Olá!'))
+     *     ->tag('boas-vindas')->send();
      */
-    public static function multi(array $channels, ?string $webhookUrl = null): NotifyMultiBuilder
+    public static function multi(array $channels = [], ?string $webhookUrl = null): NotifyMultiBuilder
     {
         return new NotifyMultiBuilder($channels, $webhookUrl);
     }

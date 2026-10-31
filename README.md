@@ -935,7 +935,24 @@ Detalhes das consultas em [Consultas de status → Telegram](#telegram-endpoints
 (new NotifyTelegram)->chatId($chat)->quiz('2 + 2?', ['3', '4', '5'], correctOptionId: 1, explanation: 'Básico');
 ```
 
-Também: `->captionAbove()`, `->replyTo($messageId, allowWithoutReply: true)` e `poll($pergunta, $opcoes, extra: ['open_period' => 60])`. Para descobrir o `chat_id`, `NotifyQuery::server()->telegram()->config($id)->telegramChats()`.
+Também: `->captionAbove()` e `->replyTo($messageId, allowWithoutReply: true)`. Enquete com várias respostas e prazo:
+
+```php
+(new NotifyTelegram)->chatId($chat)->poll('Qual dia?', ['Seg', 'Ter', 'Qua'], isAnonymous: false)
+    ->pollMultipleAnswers()
+    ->pollOpenPeriod(300);   // fecha em 5 minutos (5 a 600 s; vale também no quiz)
+```
+
+Botões de todos os tipos (cada chamada abre uma linha; `sameRow: true` põe ao lado do anterior):
+
+```php
+(new NotifyTelegram)->chatId($chat)->message('Seu pedido saiu')
+    ->button('Rastrear', 'https://loja.com/rastreio/1042')
+    ->copyButton('Copiar código', 'BR1042', sameRow: true)
+    ->webAppButton('Abrir app', 'https://loja.com/app')          // Mini App, só em chat privado
+    ->loginButton('Entrar', 'https://loja.com/login/telegram')  // domínio ligado ao bot no BotFather
+    ->switchInlineButton('Compartilhar', 'pedido 1042');        // currentChat: true busca no próprio chat
+``` Para descobrir o `chat_id`, `NotifyQuery::server()->telegram()->config($id)->telegramChats()`.
 
 ### Slack
 
@@ -1971,19 +1988,29 @@ $result = NotifyQuery::multi([
 ], webhookUrl: 'https://sua-app.com/notify/webhook')->send();
 ```
 
-Cada item tem `channel` (`sms`, `email`, `push`, `apns`, `telegram`, `slack`, `discord`,
-`teams`, `websocket`, `webhook`) e `data` com o payload daquele canal. Para não montar
-`data` na mão, reaproveite a classe de mensagem:
+Cada item tem `channel` (`sms`, `email`, `push`, `apns`, `telegram`, `whatsapp`, `slack`,
+`discord`, `teams`, `websocket`, `webhook`) e `data` com o payload daquele canal. Para não
+montar `data` na mão, passe as mensagens com `->add()`: o canal vem da classe, e o
+`config_id`, o `webhook_url`, o `failover` e o modelo salvo de cada mensagem vão para o
+lugar certo.
 
 ```php
+use RiseTechApps\Notify\Message\NotifyMail;
 use RiseTechApps\Notify\Message\NotifySms;
+use RiseTechApps\Notify\Message\NotifyTelegram;
 
-$sms = (new NotifySms)->to('5521999887766')->content('Alerta')->tag('ops');
-
-NotifyQuery::multi([
-    ['channel' => 'sms', 'data' => $sms->toArray()],
-])->send();
+NotifyQuery::multi()
+    ->add((new NotifySms)->to('5521999887766')->content('Servidor fora do ar')->failover())
+    ->add((new NotifyMail)->to('ops@app.com')->subject('Alerta')->line('Servidor fora do ar'), webhookUrl: 'https://sua-app.com/notify/webhook')
+    ->add((new NotifyTelegram)->chatId('-1001234567890')->message('Alerta'))
+    ->tag('incidente-42')
+    ->scheduledAt('2026-12-01 09:00', 'America/Sao_Paulo')   // opcional
+    ->idempotencyKey('incidente-42')                         // opcional
+    ->test()                                                 // opcional: modo de teste
+    ->send();
 ```
+
+Até 10 canais por chamada.
 
 O segundo argumento (`webhookUrl`) é o callback global do disparo; se omitido, cada canal
 segue o `webhook_url` que estiver no seu próprio `data` ou o padrão do servidor.
@@ -2009,6 +2036,19 @@ $result = NotifyQuery::server()->batch('whatsapp', [
 ], ['tag' => 'lembrete', 'config_id' => 'Loja'], idempotencyKey: 'lembrete-2026-10-12');
 ```
 
+Os itens também podem ser mensagens (`NotifyWhatsApp`, `NotifyMail`…), com o modelo salvo
+(`->template()`) incluído. No terceiro argumento valem `defaults` (campos comuns; o da
+mensagem vence), `webhook_url`, `tag`, `config_id`, `failover`, `scheduled_at`, `timezone`
+e `test => true` (modo de teste). `mail` vira `email`, o nome do canal no lote. O
+`config_id` e o `webhook_url` do lote são os do terceiro argumento, não os de cada mensagem.
+
+```php
+NotifyQuery::server()->batch('mail', [
+    (new NotifyMail)->to('ana@x.com')->template('Boas-vindas', ['nome' => 'Ana']),
+    (new NotifyMail)->to('bruno@x.com')->template('Boas-vindas', ['nome' => 'Bruno']),
+], ['tag' => 'onboarding', 'test' => true]);
+```
+
 ---
 
 ## Credenciais por driver
@@ -2032,13 +2072,18 @@ $result = NotifyQuery::server()->batch('whatsapp', [
 | `email` | `postmark` | `token` |
 | `email` | `resend` | `api_key` |
 | `push` | `fcm` | `credentials_json` (objeto do Service Account) — `->credentialsFile()` lê o `.json` e embeda; ou `->credentialsJson()` inline |
-| `apns` | `apns` | `key_id`, `team_id`, `bundle_id`, `key_path`, `production` |
+| `apns` | `apns` | `key_id`, `team_id`, `bundle_id`, `key_content` (a chave `.p8`: `->keyFile()` lê o arquivo local, `->keyContent()` recebe o texto), `production` |
 | `telegram` | `telegram` | `bot_token` |
 | `slack` | `slack` | `bot_token`, `webhook_url`, `default_channel` |
 | `discord` | `webhook` | `webhook_url`, `username`, `avatar_url` |
 | `teams` | `webhook` | `webhook_url`, `theme_color` |
-| `websocket` | `pusher` | `app_id`, `key`, `secret`, `cluster`, `host`, `port`, `scheme` |
+| `websocket` | `pusher` | `app_id`, `key`, `secret`, `cluster`, `host`, `port`, `scheme`, `max_payload_kb`, `encryption_master_key_base64` |
 | `webhook` | `generic` | `default_url`, `timeout`, `auth_type`, `auth_token`, `auth_user`, `auth_password`, `api_key_header`, `secret`, `inject_metadata` |
+
+> Slack, Discord, Teams, WebSocket, webhook e Telegram só enviam pela **sua** configuração do canal:
+> não há modo automático nem credencial da plataforma. Sem configuração ativa, o envio
+> responde `422` (exceto quando a mensagem traz o próprio destino, como `slack_webhook_url`
+> ou `url`).
 
 ### Usando uma config específica no envio
 
@@ -2163,6 +2208,8 @@ $campaign = NotifyCampaignBuilder::email()
 | `->sendHtml(string $path)` | Envia usando um [HTML próprio](#template-html-próprio) |
 
 ---
+
+Anexos por URL pública no e-mail da campanha: `->attachUrl('https://cdn.app.com/catalogo.pdf')` (até 10).
 
 ### Campanha WhatsApp
 
@@ -2315,58 +2362,83 @@ O package inclui `NotifyWebhookController` que recebe os callbacks do servidor e
 
 ### Validação de assinatura
 
-O servidor assina cada callback com HMAC-SHA256 e envia o resultado no header:
+O middleware `VerifyNotifySignature` valida a assinatura HMAC-SHA256 antes de o controller
+rodar. Todo webhook do servidor sai no formato do api-key:
 
-```
-X-Notify-Signature: t=1750000000,v1=9f86d081884c7d65...
-```
+| Header | Conteúdo |
+|---|---|
+| `X-Webhook-Id` | `id` do envelope (`evt_…`), igual num reenvio |
+| `X-Webhook-Event` | nome do evento |
+| `X-Webhook-Timestamp` | momento da entrega, em segundos Unix |
+| `X-Webhook-Signature` | `sha256=` + HMAC-SHA256 de `"{timestamp}.{corpo bruto}"` |
 
-O material assinado é `{timestamp}.{corpo bruto}`. O middleware `VerifyNotifySignature`
-valida isso automaticamente antes de o controller rodar:
+O segredo é o da conta (painel → Configurações → Assinatura dos webhooks) no `webhook_url`,
+no webhook do número e no da conversa, e o de cada endpoint nos webhooks da conta
+(painel → Webhooks).
 
-1. recalcula o HMAC sobre `{t}.{corpo bruto}` usando `notify.webhook_secret`;
-2. compara com `hash_equals()` (comparação em tempo constante);
-3. recusa payloads cujo `t` esteja fora da janela de `notify.webhook_tolerance`
-   segundos (anti-replay, default 300).
+O formato do servidor 1.0.0 (`X-Notify-Signature: t=…,v1=…`) continua aceito durante a
+transição.
+
+1. recalcula o HMAC com cada segredo de `notify.webhook_secret` e compara com `hash_equals()`;
+2. recusa o que estiver fora de `notify.webhook_tolerance` segundos (anti-replay).
 
 Qualquer falha retorna `403` e o controller não é executado.
 
 | Config | Default | Descrição |
 |---|---|---|
-| `notify.webhook_secret` | `''` | Segredo compartilhado, obtido no painel do NotifyKit. **Sem ele todos os callbacks são recusados com 403.** |
+| `notify.webhook_secret` | `''` | Segredo(s), separados por vírgula: o da conta e o de cada endpoint da conta. Basta um conferir (também serve para rotação). **Sem nenhum, todos os callbacks são recusados com 403.** |
 | `notify.webhook_verify` | `true` | Liga/desliga a validação. Só desligue em ambiente local. |
 | `notify.webhook_tolerance` | `300` | Janela anti-replay em segundos. `0` desliga a checagem de tempo. |
 
-O header aceita mais de um `v1` (`t=...,v1=abc...,v1=def...`) — útil durante rotação
-de segredo: basta um deles conferir.
+```env
+NOTIFY_SERVICE_WEBHOOK_SECRET=segredo-da-conta,segredo-do-endpoint
+```
 
 > ⚠️ A validação usa o **corpo bruto** (`$request->getContent()`). Se você escrever a
 > sua própria verificação, nunca use `json_encode($request->all())`: a ordem das chaves
 > e o escape de `/` e de unicode mudam os bytes e a assinatura nunca vai conferir.
 
-**Notificação individual** → dispara `NotifyWebhookEvent`. Payload típico recebido:
+### Formatos e roteamento
+
+As três rotas (`/notify/webhook`, `/notify/webhook/campaign` e `/notify/webhook/whatsapp`)
+aceitam qualquer evento e o encaminham pelo conteúdo: `notification_id` → notificação;
+`campaign.*` → campanha; `whatsapp.*` do chat → WhatsApp. Assim, um endpoint da conta pode
+apontar para uma URL só. Todo webhook chega no envelope `{id, event, created_at, data}`, que
+é aberto antes do evento: o conteúdo de `data` sobe, e o `id` fica em `payload['delivery_id']`
+(use-o para descartar reenvios). Os exemplos abaixo mostram o conteúdo já aberto.
+
+**Notificação** → dispara `NotifyWebhookEvent`:
 ```json
 {
-    "event": "sent",
+    "event": "notification.sent",
+    "channel": "telegram",
     "notification_id": "uuid-do-servidor",
     "provider_id": "11",
-    "status": "send",
-    "type": "telegram"
+    "status": "sent",
+    "tag": ["pedido"],
+    "timestamp": "2026-10-31T12:00:00-03:00",
+    "test": true
 }
 ```
 
-**Campanha** → dispara `NotifyCampaignWebhookEvent`. Payload típico:
+Eventos: `notification.created`, `.sending`, `.sent`, `.delivered`, `.error`, `.failed`,
+`.cancelled` (e os do canal, como `notification.token_invalid`). O servidor 1.0.0 mandava
+sem o prefixo (`sent`); `$event->is('sent')` e `$event->name()` funcionam com os dois.
+`test` vem só no modo de teste (`$event->test`).
+
+**Campanha** → dispara `NotifyCampaignWebhookEvent` (`$event->event` traz o nome).
+Saem `campaign.created`, `campaign.started` e `campaign.completed` (mais `paused`,
+`cancelled` etc.); os contatos não geram eventos, o andamento fica em
+`->campaigns($canal, $id)->contacts()`:
 ```json
 {
-    "campaign_id": "uuid-da-campanha-no-servidor",
-    "status": "processing",
-    "total": 1000,
-    "sent": 450,
-    "failed": 12,
-    "contact_updates": [
-        { "contact": "joao@email.com", "status": "sent" },
-        { "contact": "erro@email.com", "status": "failed", "error": "Mailbox full" }
-    ]
+    "event": "campaign.completed",
+    "campaign_id": "uuid-da-campanha",
+    "channel": "sms",
+    "status": "completed",
+    "total": 1000, "sent": 950, "failed": 50, "skipped": 12, "progress": 100,
+    "started_at": "2026-10-31T09:00:00-03:00",
+    "finished_at": "2026-10-31T09:40:00-03:00"
 }
 ```
 
@@ -2379,10 +2451,14 @@ public function handle(NotifyWebhookEvent $event): void
     // $event->event, $event->notificationId, $event->providerId,
     // $event->status, $event->type, $event->payload (array cru completo)
 
-    match ($event->status) {
-        'delivered' => /* ... */ null,
-        'error'     => /* ... */ null,
-        default     => null,
+    if ($event->test) {
+        return; // modo de teste
+    }
+
+    match (true) {
+        $event->is('delivered') => /* ... */ null,
+        $event->is('failed')    => /* ... */ null,
+        default                 => null,
     };
 }
 ```
@@ -3101,7 +3177,7 @@ NotifyQuery::server()->push()->config()
 NotifyQuery::server()->apns()->config()
     ->driver('apns')
     ->label('APNS iOS')
-    ->keyPath('/path/to/AuthKey.p8')
+    ->keyFile(storage_path('app/AuthKey_XXXXXXXXXX.p8'))   // lê o arquivo e envia o conteúdo
     ->keyId('XXXXXXXXXX')
     ->teamId('XXXXXXXXXX')
     ->bundleId('com.empresa.app')
@@ -3265,3 +3341,28 @@ NotifyCampaignBuilder::sms()
 MIT — veja [LICENSE.md](LICENSE.md) para detalhes.
 
 &copy; 2026 [Rise Tech Apps](https://risetech.com.br)
+
+---
+
+## Testes de contrato contra o servidor
+
+`tests/E2E` manda cada recurso do pacote a um notify-server de verdade, no modo de teste
+(nada chega a um provedor), e confere que o servidor aceitou e guardou **todos** os campos
+enviados. Com um receptor de webhooks, confere também a volta: a assinatura do servidor
+passando pelo `VerifyNotifySignature` e o evento disparado. Sem as variáveis, a suíte é pulada.
+
+```bash
+NOTIFY_E2E_URL=http://127.0.0.1:8020 \
+NOTIFY_E2E_KEY=<chave de uma conta com todas as features> \
+NOTIFY_E2E_CAPTURE=/caminho/captured.jsonl \
+NOTIFY_E2E_RECEIVER=http://127.0.0.1:8031 \
+NOTIFY_E2E_SECRETS="<segredo da conta>,<segredo do endpoint>" \
+vendor/bin/pest tests/E2E
+```
+
+A conta precisa de configuração ativa de Slack, Discord, Teams, WebSocket, webhook e de um
+número de WhatsApp. O receptor é qualquer servidor que grave cada POST como uma linha JSON
+`{path, headers, body}` em `NOTIFY_E2E_CAPTURE`. No servidor de teste, libere URLs locais
+(`NOTIFY_WEBHOOK_BLOCK_PRIVATE=false`, `API_KEY_WEBHOOKS_ALLOW_HTTP=true`,
+`API_KEY_WEBHOOKS_BLOCK_PRIVATE=false`) e rode um worker de fila.
+

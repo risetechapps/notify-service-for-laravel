@@ -166,6 +166,29 @@ class NotifyTelegram
         return $this;
     }
 
+    /** Enquete com mais de uma resposta por pessoa (não vale em quiz). Chame depois de poll(). */
+    public function pollMultipleAnswers(bool $multiple = true): static
+    {
+        return $this->pollOption('allows_multiple_answers', $multiple);
+    }
+
+    /** Fecha a enquete depois de $seconds segundos (5 a 600). Chame depois de poll() ou quiz(). */
+    public function pollOpenPeriod(int $seconds): static
+    {
+        return $this->pollOption('open_period', $seconds);
+    }
+
+    protected function pollOption(string $key, mixed $value): static
+    {
+        if ($this->poll === null) {
+            throw new \LogicException("Chame poll() ou quiz() antes de definir {$key}.");
+        }
+
+        $this->poll[$key] = $value;
+
+        return $this;
+    }
+
     /** Quiz: enquete com uma resposta certa (índice a partir de 0). */
     public function quiz(string $question, array $options, int $correctOptionId, ?string $explanation = null, bool $isAnonymous = true): static
     {
@@ -283,12 +306,49 @@ class NotifyTelegram
     }
 
     /**
-     * Adiciona um botão inline (cada chamada vira uma linha).
+     * Adiciona um botão inline de link. Cada chamada vira uma linha; com
+     * $sameRow, o botão entra na linha do anterior.
      * Exemplo: ->button('Ver pedido', 'https://app.com/pedidos/1')
      */
-    public function button(string $text, string $url): static
+    public function button(string $text, string $url, bool $sameRow = false): static
     {
-        $this->buttons[][] = ['text' => $text, 'url' => $url];
+        return $this->addButton(['text' => $text, 'url' => $url], $sameRow);
+    }
+
+    /** Abre um Mini App do Telegram (Web App) nesta URL. Só em chat privado. */
+    public function webAppButton(string $text, string $url, bool $sameRow = false): static
+    {
+        return $this->addButton(['text' => $text, 'web_app' => ['url' => $url]], $sameRow);
+    }
+
+    /** Login no seu site pelo Telegram (Telegram Login). O domínio precisa estar ligado ao bot no BotFather. */
+    public function loginButton(string $text, string $url, bool $sameRow = false): static
+    {
+        return $this->addButton(['text' => $text, 'login_url' => ['url' => $url]], $sameRow);
+    }
+
+    /** Copia $copy para a área de transferência de quem toca (até 256 caracteres). */
+    public function copyButton(string $text, string $copy, bool $sameRow = false): static
+    {
+        return $this->addButton(['text' => $text, 'copy_text' => ['text' => $copy]], $sameRow);
+    }
+
+    /**
+     * Abre a busca inline do bot com $query. Por padrão o usuário escolhe o
+     * chat; com $currentChat, a busca abre no chat atual.
+     */
+    public function switchInlineButton(string $text, string $query = '', bool $currentChat = false, bool $sameRow = false): static
+    {
+        return $this->addButton(['text' => $text, $currentChat ? 'switch_inline_query_current_chat' : 'switch_inline_query' => $query], $sameRow);
+    }
+
+    protected function addButton(array $button, bool $sameRow): static
+    {
+        if ($sameRow && $this->buttons !== []) {
+            $this->buttons[array_key_last($this->buttons)][] = $button;
+        } else {
+            $this->buttons[][] = $button;
+        }
 
         return $this;
     }

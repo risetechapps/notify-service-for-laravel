@@ -30,8 +30,10 @@ return [
     // deste array (controlada por 'webhook_verify'), não precisa ser listada aqui.
     'routes_middleware' => ['api'],
 
-    // Segredo compartilhado usado para validar o header X-Notify-Signature.
-    // Obtido no painel do NotifyKit. Sem ele os callbacks são recusados com 403.
+    // Segredo(s) para validar a assinatura dos callbacks (X-Webhook-Signature).
+    // Separe por vírgula: o da conta (painel → Configurações → Assinatura dos
+    // webhooks, usado nos envios com webhook_url) e o de cada endpoint em
+    // painel → Webhooks. Sem nenhum, os callbacks são recusados com 403.
     'webhook_secret' => env('NOTIFY_SERVICE_WEBHOOK_SECRET', ''),
 
     // Valida a assinatura HMAC dos callbacks recebidos. Só desligue em ambiente
@@ -39,7 +41,7 @@ return [
     'webhook_verify' => env('NOTIFY_SERVICE_WEBHOOK_VERIFY', true),
 
     // Janela anti-replay em segundos: recusa callbacks cujo timestamp assinado
-    // esteja fora deste intervalo. 0 desliga a checagem de tempo.
+    // esteja fora deste intervalo (X-Webhook-Timestamp). 0 desliga a checagem de tempo.
     'webhook_tolerance' => env('NOTIFY_SERVICE_WEBHOOK_TOLERANCE', 300),
 
     // Notificação com fila (ShouldQueue): falha passageira no envio (servidor

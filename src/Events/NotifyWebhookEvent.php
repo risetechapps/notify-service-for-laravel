@@ -36,5 +36,29 @@ class NotifyWebhookEvent
         public ?string $status,
         public ?string $type,
         public array $payload = [],
+        public bool $test = false,
     ) {}
+
+    /**
+     * Nome do evento sem o prefixo `notification.` (sent, failed, delivered…).
+     * O servidor passou a mandar `notification.sent`; o servidor 1.0.0, `sent`.
+     */
+    public function name(): ?string
+    {
+        return $this->event === null ? null : preg_replace('/^notification\./', '', $this->event);
+    }
+
+    /** Compara o evento com ou sem o prefixo: is('sent') e is('notification.sent'). */
+    public function is(string ...$events): bool
+    {
+        $name = $this->name();
+
+        foreach ($events as $event) {
+            if ($name !== null && $name === preg_replace('/^notification\./', '', $event)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
