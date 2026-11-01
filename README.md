@@ -1927,12 +1927,16 @@ public function routeNotificationForWhatsapp(): string
 #### Mais opções do WhatsApp
 
 ```php
-(new NotifyWhatsApp)->group('120363012345678901@g.us')->mentionAll()->content('Reunião às 15h');
+(new NotifyWhatsApp)->group('120363012345678901@g.us')->content('Reunião às 15h');
 (new NotifyWhatsApp)->to('5521999998888')->mediaFile(storage_path('app/boleto.pdf'));   // no corpo, até 8 MB
 (new NotifyWhatsApp)->to('5521999998888')->location(-22.9, -43.2, 'Loja Centro', 'Rua X, 10');
 (new NotifyWhatsApp)->to('5521999998888')->contact('Suporte', '5521988887777');
-(new NotifyWhatsApp)->to('5521999998888')->content('https://app.com')->linkPreview(false)->typing(false);
+(new NotifyWhatsApp)->to('5521999998888')->content('Seu código: 4821')->typing(false);
 ```
+
+> O WhatsApp do servidor é a W-API. Ela não tem menção no envio nem desliga a prévia de
+> link: `mentionAll()`, `mention()` e `linkPreview(false)` são aceitos, mas não têm efeito.
+> No cartão de contato, vão só o nome e o telefone.
 
 Editar e apagar: `NotifyQuery::server()->whatsapp($notificationId)->edit('Texto novo')` (até 15 minutos) e `->delete()` (até 2 dias). Grupos do número: `NotifyQuery::server()->whatsapp()->config($id)->whatsappGroups()`.
 
@@ -2896,15 +2900,18 @@ $id = $numero['data']['id'];
 
 // A cada 3–5 s: mostre o qrcode (data URI) até state = open. O QR expira em ~40 s.
 $estado = NotifyQuery::server()->whatsappNumber($id)->state(); // ['state', 'qrcode', 'number']
+
+// Sem câmera (o número está no próprio celular): o código de pareamento, para
+// "Aparelhos conectados → Conectar com número de telefone".
+$estado = NotifyQuery::server()->whatsappNumber($id)->state('5521999998888'); // [..., 'pairing_code']
 ```
 
 | Método (`whatsappNumber($id)`) | Descrição |
 |---|---|
 | `create(label?, asDefault?)` · `all()` | Cria (sem id) e lista os números |
-| `state()` · `logout()` | Estado/QR code e desconexão |
+| `state(telefone?)` · `logout()` | Estado/QR code (com o telefone, também o `pairing_code`) e desconexão |
 | `alerts()` · `updateAlerts([...])` | Avisos de queda e volta: e-mail e/ou webhook (`whatsapp.disconnected`, `reconnected`, `paused`) |
 | `chatSettings()` · `updateChatSettings([...])` | Chat do número: fluxo do bot, avisos ao contato, fechamento por inatividade, webhook e filtro de eventos. Sempre envie `enabled` e `mark_read` |
-| `importHistory('1d'\|'7d'\|'30d')` | Importa conversas do celular |
 | `protection()` · `resumeProtection()` | Uso do dia, limites, aquecimento e saúde; retoma os envios pausados |
 
 > Um número só fica conectado em uma configuração: conectar o mesmo número em outra é recusado.

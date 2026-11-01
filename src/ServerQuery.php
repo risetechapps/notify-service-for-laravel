@@ -100,8 +100,8 @@ class ServerQuery
     }
 
     /**
-     * Um número de WhatsApp: criar, conectar pelo QR, avisos de conexão,
-     * configurações do chat, importação do histórico e proteção do número.
+     * Um número de WhatsApp: criar, conectar pelo QR (ou código de
+     * pareamento), avisos de conexão, configurações do chat e proteção do número.
      * Sem id: create() e all().
      */
     public function whatsappNumber(?string $configId = null): Server\WhatsAppNumber

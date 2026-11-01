@@ -10,6 +10,7 @@ Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/
 
 ### Corrigido
 
+- **WhatsApp pela W-API.** `whatsappNumber()->create()` cria a configuração com o driver `wapi` (o servidor trocou a Evolution pela W-API). Sai `importHistory()`: a W-API não traz mensagens antigas. `mentionAll()`, `mention()` e `linkPreview(false)` continuam, mas sem efeito.
 - **Callbacks recusados com 403 depois do novo servidor.** O `VerifyNotifySignature` só aceitava `X-Notify-Signature: t=…,v1=…`. Agora valida o formato do api-key, que o servidor usa em todos os webhooks (`X-Webhook-Signature: sha256=` + HMAC de `"{X-Webhook-Timestamp}.{corpo}"`, com janela anti-replay), e segue aceitando o formato antigo durante a transição. `notify.webhook_secret` aceita vários segredos separados por vírgula (o da conta e o de cada endpoint).
 - **Campanha de e-mail sem `app_name`.** Com `notify.mail.app_name` vazio (a chave existe no config), o padrão `config('app.name')` não entrava e o servidor recusava a campanha com 422.
 - **Webhooks no envelope chegavam vazios.** O envelope `{id, event, created_at, data}`, agora usado em todos os webhooks do servidor, é aberto antes de disparar o evento; o `id` vai em `payload['delivery_id']`.
@@ -17,6 +18,7 @@ Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/
 
 ### Adicionado
 
+- WhatsApp: `whatsappNumber($id)->state($telefone)` devolve também o `pairing_code` (conectar com o número de telefone, sem ler o QR).
 - As três rotas de webhook encaminham pelo conteúdo: notificação, `campaign.*` e `whatsapp.*` vão para o evento certo, mesmo chegando na mesma URL.
 - `NotifyWebhookEvent`: `name()`, `is()` (aceita `sent` e `notification.sent`) e `test`. `NotifyCampaignWebhookEvent`: `event`.
 - `NotifyQuery::multi()->add($mensagem)`: mensagens no multicanal, com canal, `config_id`, `webhook_url`, `failover` e modelo de cada uma; `tag()`, `scheduledAt()`, `test()` e `idempotencyKey()`.

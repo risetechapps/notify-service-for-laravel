@@ -28,7 +28,11 @@ it('número: cria pelo provedor da plataforma e lê estado e proteção pelo id'
         ->and(NotifyQuery::server()->whatsappNumber('cfg-1')->protection())->toBe(['message' => 'Sem permissão', 'http' => 403]);
 
     Http::assertSent(fn ($r) => $r->url() === Notify::BASE_URL.'/api/v1/configurations' && $r->method() === 'POST'
-        && $r->data() === ['channel' => 'whatsapp', 'driver' => 'evolution', 'label' => 'Atendimento', 'credentials' => [], 'is_default' => true]);
+        && $r->data() === ['channel' => 'whatsapp', 'driver' => 'wapi', 'label' => 'Atendimento', 'credentials' => [], 'is_default' => true]);
+
+    Http::fake([Notify::BASE_URL.'/*' => Http::response(['state' => 'connecting', 'pairing_code' => 'ABCD1234'])]);
+    expect(NotifyQuery::server()->whatsappNumber('cfg-1')->state('5521999998888')['pairing_code'])->toBe('ABCD1234');
+    Http::assertSent(fn ($r) => str_ends_with($r->url(), '/configurations/cfg-1/whatsapp?phone=5521999998888'));
 
     expect(fn () => NotifyQuery::server()->whatsappNumber()->state())->toThrow(InvalidArgumentException::class);
 });

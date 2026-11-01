@@ -87,7 +87,7 @@ class NotifyWhatsApp
         return $this;
     }
 
-    /** No grupo: menciona todos os participantes. */
+    /** No grupo: menciona todos os participantes. Hoje sem efeito: o provedor (W-API) não tem menção no envio. */
     public function mentionAll(bool $mentionAll = true): static
     {
         $this->mentionAll = $mentionAll;
@@ -95,7 +95,7 @@ class NotifyWhatsApp
         return $this;
     }
 
-    /** No grupo: menciona estes números (até 50). */
+    /** No grupo: menciona estes números (até 50). Hoje sem efeito: o provedor (W-API) não tem menção no envio. */
     public function mention(string|array $phones): static
     {
         $this->mentions = array_values(array_unique(array_merge($this->mentions, (array) $phones)));
@@ -147,7 +147,7 @@ class NotifyWhatsApp
         return $this;
     }
 
-    /** false desliga a prévia do link do texto. */
+    /** false desligaria a prévia do link. Hoje sem efeito: o provedor (W-API) sempre mostra a prévia. */
     public function linkPreview(bool $linkPreview = true): static
     {
         $this->linkPreview = $linkPreview;

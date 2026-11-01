@@ -10,7 +10,10 @@ namespace RiseTechApps\Notify\Server;
  *   NotifyQuery::server()->whatsappNumber($id)->protection(); // uso do dia, limites, saúde
  *
  * Conectar: chame state() a cada 3–5 s e mostre o `qrcode` até `state` = open.
- * O QR expira em ~40 s. Um número só fica conectado em uma configuração.
+ * O QR expira em ~40 s. Sem câmera (o número está no próprio celular), passe o
+ * telefone: state('5521999998888') devolve também o `pairing_code`, para
+ * digitar em "Conectar com número de telefone". Um número só fica conectado
+ * em uma configuração.
  */
 class WhatsAppNumber extends Resource
 {
@@ -24,7 +27,7 @@ class WhatsAppNumber extends Resource
     {
         return $this->result($this->http()->post('/api/v1/configurations', self::filled([
             'channel' => 'whatsapp',
-            'driver' => 'evolution',
+            'driver' => 'wapi',
             'label' => $label,
             'credentials' => [],
             'is_default' => $asDefault ?: null,
@@ -37,10 +40,10 @@ class WhatsAppNumber extends Resource
         return $this->result($this->http()->get('/api/v1/configurations', ['channel' => 'whatsapp']));
     }
 
-    /** Estado da conexão e, enquanto não conecta, o QR code (data URI). */
-    public function state(): array
+    /** Estado da conexão e, enquanto não conecta, o QR code (data URI); com o telefone, também o pairing_code. */
+    public function state(?string $phone = null): array
     {
-        return $this->result($this->http()->get($this->path()));
+        return $this->result($this->http()->get($this->path(), self::filled(['phone' => $phone])));
     }
 
     /** Desconecta o número (para voltar, leia o QR de novo). */
@@ -74,12 +77,6 @@ class WhatsAppNumber extends Resource
     public function updateChatSettings(array $settings): array
     {
         return $this->result($this->http()->put($this->path('/chat'), $settings));
-    }
-
-    /** Importa conversas do histórico do celular: '1d', '7d' ou '30d' (ou 'gap'/'none' para a pergunta pendente). */
-    public function importHistory(string $period = '1d'): array
-    {
-        return $this->result($this->http()->post($this->path('/history'), ['period' => $period]));
     }
 
     /** Proteção do número: envios e contatos novos do dia, limites, aquecimento, saúde e pausa. */
