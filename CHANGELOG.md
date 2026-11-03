@@ -4,11 +4,18 @@ Todas as mudanças notáveis para o pacote `risetechapps/notify-service-for-lara
 
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), e este projeto adere ao [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Não lançado]
+## [2.0.0] - 2026-11-03
 
-### Adicionado (cobertura completa do servidor, 03/11/2026)
+Requer o notify-server v2.0.0. Cobre as 161 rotas da API do servidor. Não confundir com a 2.0.0 de pré-lançamento citada na 1.0.0, que nunca virou tag.
 
-Conferido contra as 161 rotas da API do notify-server: agora o pacote cobre todas.
+### Atualizando (quebras)
+
+- **Atualize o pacote antes do deploy do servidor v2.0.0:** os webhooks passam a ser assinados no formato do api-key (`X-Webhook-Signature`), que só esta versão valida; com a versão antiga, os callbacks são recusados com 403.
+- **Slack, Discord, Teams, WebSocket, Telegram e webhook genérico** só enviam pela configuração do cliente no servidor: sem uma ativa, o envio volta `422` (ver "Alterado").
+- **WhatsApp na W-API:** os números precisam ser conectados de novo, e `importHistory()` saiu (ver "Removido").
+- **Nomes dos eventos:** compare com `notification.sent`, não `sent` (`NotifyWebhookEvent::is()` aceita os dois).
+
+### Adicionado
 
 - **Número de WhatsApp:** `restart()` (reinicia a sessão sem QR), `optOutReply()`/`updateOptOutReply()` (resposta ao SAIR e ao VOLTAR) e `state($telefone, qr: false)` para acompanhar o pareamento sem gerar código novo.
 - **Chat:** `typing()`, `react()`, `editMessage()` e `deleteMessage()` na conversa; `messages(since: …)`; `startPoll()` e `quotedId` no `start()`.
@@ -20,30 +27,8 @@ Conferido contra as 161 rotas da API do notify-server: agora o pacote cobre toda
 - **Tempo limite e novas tentativas** (`notify.http`) em todas as chamadas ao servidor: 20 s (arquivos, 120 s), conexão em 5 s. Leituras (GET) tentam de novo até 2 vezes em falha de conexão ou 5xx; envios e ações do chat nunca repetem sozinhos. Antes valia o padrão do Laravel (30 s, sem nova tentativa).
 - **Cache curto** (`notify.cache`, 30 s) de `team()->members()`, `chat()->numbers()` e `botFlows()->all()`, separado por atendente; quem altera pelo pacote limpa o cache. `fresh: true` busca na hora.
 - **Proteção do número de WhatsApp:** `whatsappNumber($id)->capacity()` (envios e contatos novos que ainda cabem hoje, pausa e aquecimento) e `NotifyFailedEvent::protectionReason()` (`daily_limit`, `new_contacts`, `duplicate`, `paused`…). `NotifyFailedEvent` ganha `response` e `status`.
-- **README:** `start()` do chat para quem nunca escreveu ao número agora passa pela proteção no servidor (limite diário, contatos novos, mensagem repetida, pausa) e pode voltar `429` com `reason`; documentado em "Proteção do número".
-- **README:** seções "Vários números" (qual número envia, chat e configurações por número) e "Proteção do número" (regras, aquecimento, motivos do 429 e como reagir).
-- **README:** seção de autoatendimento com o formato completo do fluxo (menu, palavras-chave, horário, ações, anexos e simulação).
 - **Conta:** `quota()` (`GET /usage`: plano, cota, limite por minuto) e `requestsDaily()` (`GET /usage/daily`).
 - **Listas:** busca e paginação em `templates()->all()`, `contactLists()->all()`, `members()` e `optOuts()->all()`.
-
-### Corrigido
-
-- **Recusa da proteção do número repetia na fila.** O 429 com `reason` (limite do dia, contatos novos, mensagem repetida, número pausado) era tratado como falha passageira e a notificação com fila tentava de novo em segundos, sem chance de passar. Agora devolve o erro sem repetir; os outros 429 continuam repetindo.
-- **Filtros da listagem de campanhas.** `status()`, `tag()`, `from()` e `to()` eram ignorados pelo servidor; o notify-server passa a aplicá-los (status, qualquer uma das tags, período de criação).
-- **README:** o exemplo de entregas de webhook filtrava por `status`, que não existe; o filtro é `success=0`.
-
-Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/31). Compatível com o notify-server a partir de 007591e (revisão de canais). Atualize antes do deploy do servidor: o formato de assinatura mudou.
-
-### Corrigido
-
-- **WhatsApp pela W-API.** `whatsappNumber()->create()` cria a configuração com o driver `wapi` (o servidor trocou a Evolution pela W-API). Sai `importHistory()`: a W-API não traz mensagens antigas. `mentionAll()`, `mention()` e `linkPreview(false)` continuam, mas sem efeito.
-- **Callbacks recusados com 403 depois do novo servidor.** O `VerifyNotifySignature` só aceitava `X-Notify-Signature: t=…,v1=…`. Agora valida o formato do api-key, que o servidor usa em todos os webhooks (`X-Webhook-Signature: sha256=` + HMAC de `"{X-Webhook-Timestamp}.{corpo}"`, com janela anti-replay), e segue aceitando o formato antigo durante a transição. `notify.webhook_secret` aceita vários segredos separados por vírgula (o da conta e o de cada endpoint).
-- **Campanha de e-mail sem `app_name`.** Com `notify.mail.app_name` vazio (a chave existe no config), o padrão `config('app.name')` não entrava e o servidor recusava a campanha com 422.
-- **Webhooks no envelope chegavam vazios.** O envelope `{id, event, created_at, data}`, agora usado em todos os webhooks do servidor, é aberto antes de disparar o evento; o `id` vai em `payload['delivery_id']`.
-- **Editar mensagem enviada não funcionava.** `edit()` mandava o texto em `text` e `editCaption()` em `caption`, mas o servidor espera `message` (e `content` no WhatsApp): toda edição pelo pacote voltava `422`.
-
-### Adicionado
-
 - WhatsApp: `whatsappNumber($id)->state($telefone)` devolve também o `pairing_code` (conectar com o número de telefone, sem ler o QR).
 - As três rotas de webhook encaminham pelo conteúdo: notificação, `campaign.*` e `whatsapp.*` vão para o evento certo, mesmo chegando na mesma URL.
 - `NotifyWebhookEvent`: `name()`, `is()` (aceita `sent` e `notification.sent`) e `test`. `NotifyCampaignWebhookEvent`: `event`.
@@ -67,14 +52,32 @@ Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/
 - **Ações sobre a mensagem enviada:** `unpin()`, `editMedia()` e `editButtons()` (Telegram), `pin()`, `unpin()` e `react()` (Slack), `edit()` e `delete()` no WhatsApp, e `edit(..., extra: [...])` para os demais campos. As ações devolvem também `errors`.
 - **Configurações:** `telegramChats()`, `slackChannels()` e `whatsappGroups()`.
 
-### Documentação
-
-- README: assinatura, formatos e roteamento dos webhooks, nomes `notification.*`, eventos de campanha, multicanal e lote com mensagens, canais só com configuração do cliente, campos do WebSocket e do APNs.
-
 ### Alterado
 
 - **Teams:** `color()` não tira mais o `#` (o servidor converte o hex no estilo do Adaptive Card). O card montado pelo servidor agora é Adaptive Card.
 - **Slack, Discord, Teams, WebSocket e webhook genérico** só enviam pela configuração do cliente no servidor: sem uma ativa (e sem a URL de destino na mensagem, quando o canal tem), o envio volta `422`.
+
+### Removido
+
+- **`whatsappNumber()->importHistory()`:** a W-API não traz mensagens antigas.
+
+### Corrigido
+
+- **Recusa da proteção do número repetia na fila.** O 429 com `reason` (limite do dia, contatos novos, mensagem repetida, número pausado) era tratado como falha passageira e a notificação com fila tentava de novo em segundos, sem chance de passar. Agora devolve o erro sem repetir; os outros 429 continuam repetindo.
+- **Filtros da listagem de campanhas.** `status()`, `tag()`, `from()` e `to()` eram ignorados pelo servidor; o notify-server passa a aplicá-los (status, qualquer uma das tags, período de criação).
+- **README:** o exemplo de entregas de webhook filtrava por `status`, que não existe; o filtro é `success=0`.
+- **WhatsApp pela W-API.** `whatsappNumber()->create()` cria a configuração com o driver `wapi` (o servidor trocou a Evolution pela W-API). `mentionAll()`, `mention()` e `linkPreview(false)` continuam, mas sem efeito.
+- **Callbacks recusados com 403 depois do novo servidor.** O `VerifyNotifySignature` só aceitava `X-Notify-Signature: t=…,v1=…`. Agora valida o formato do api-key, que o servidor usa em todos os webhooks (`X-Webhook-Signature: sha256=` + HMAC de `"{X-Webhook-Timestamp}.{corpo}"`, com janela anti-replay), e segue aceitando o formato antigo durante a transição. `notify.webhook_secret` aceita vários segredos separados por vírgula (o da conta e o de cada endpoint).
+- **Campanha de e-mail sem `app_name`.** Com `notify.mail.app_name` vazio (a chave existe no config), o padrão `config('app.name')` não entrava e o servidor recusava a campanha com 422.
+- **Webhooks no envelope chegavam vazios.** O envelope `{id, event, created_at, data}`, agora usado em todos os webhooks do servidor, é aberto antes de disparar o evento; o `id` vai em `payload['delivery_id']`.
+- **Editar mensagem enviada não funcionava.** `edit()` mandava o texto em `text` e `editCaption()` em `caption`, mas o servidor espera `message` (e `content` no WhatsApp): toda edição pelo pacote voltava `422`.
+
+### Documentação
+
+- README: assinatura, formatos e roteamento dos webhooks, nomes `notification.*`, eventos de campanha, multicanal e lote com mensagens, canais só com configuração do cliente, campos do WebSocket e do APNs.
+- **README:** `start()` do chat para quem nunca escreveu ao número agora passa pela proteção no servidor (limite diário, contatos novos, mensagem repetida, pausa) e pode voltar `429` com `reason`; documentado em "Proteção do número".
+- **README:** seções "Vários números" (qual número envia, chat e configurações por número) e "Proteção do número" (regras, aquecimento, motivos do 429 e como reagir).
+- **README:** seção de autoatendimento com o formato completo do fluxo (menu, palavras-chave, horário, ações, anexos e simulação).
 
 ## [1.0.0] - 2026-10-22
 
@@ -121,3 +124,6 @@ Troque a restrição no `composer.json` para `^1.0`. O pacote vem do Packagist: 
 #### Obsoleto
 
 - `ChatEvents::wait()` e a opção `--wait` do comando: o servidor ignora a espera. Continuam aceitos para não quebrar quem usa; o comando avisa.
+
+[2.0.0]: https://github.com/risetechapps/notify-service-for-laravel/compare/1.0.0...2.0.0
+[1.0.0]: https://github.com/risetechapps/notify-service-for-laravel/releases/tag/1.0.0

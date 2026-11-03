@@ -2,6 +2,7 @@
 
 namespace RiseTechApps\Notify\Server;
 
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
@@ -109,7 +110,7 @@ abstract class Resource
         return "notify:{$account}:{$key}:".substr(hash('sha256', serialize($actor)), 0, 16);
     }
 
-    private static function cache(): \Illuminate\Contracts\Cache\Repository
+    private static function cache(): Repository
     {
         return Cache::store(config('notify.cache.store'));
     }
