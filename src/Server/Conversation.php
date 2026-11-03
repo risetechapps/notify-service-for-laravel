@@ -2,7 +2,7 @@
 
 namespace RiseTechApps\Notify\Server;
 
-use Illuminate\Support\Facades\Http;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 /**
  * Uma conversa do chat: mensagens e ações. As ações saem em nome de quem o
@@ -38,12 +38,13 @@ class Conversation extends Resource
     }
 
     /**
-     * Mensagens: as 50 mais recentes; $before (id de mensagem) traz as
-     * anteriores a ela (rolar para cima).
+     * Mensagens: as 50 mais recentes ($limit até 200); $before (id de
+     * mensagem) traz as anteriores a ela (rolar para cima); $since (o
+     * `server_time` da resposta anterior) traz só as novas ou alteradas.
      */
-    public function messages(?string $before = null, ?int $limit = null): array
+    public function messages(?string $before = null, ?int $limit = null, ?string $since = null): array
     {
-        return $this->result($this->http()->get($this->path('/messages'), self::filled(['before' => $before, 'limit' => $limit])));
+        return $this->result($this->http()->get($this->path('/messages'), self::filled(['before' => $before, 'limit' => $limit, 'since' => $since])));
     }
 
     /** Responde com texto. $quotedId: id do WhatsApp (provider_id) da mensagem citada. */
@@ -59,7 +60,7 @@ class Conversation extends Resource
             throw new \InvalidArgumentException("Arquivo não encontrado ou sem leitura: {$path}");
         }
 
-        $request = $this->http()->attach('file', file_get_contents($path), $fileName ?? basename($path));
+        $request = NotifyHttp::upload($this->http())->attach('file', file_get_contents($path), $fileName ?? basename($path));
 
         return $this->result($request->post($this->path('/messages'), $this->body(['content' => $caption])));
     }
@@ -70,6 +71,33 @@ class Conversation extends Resource
         return $this->result($this->http()->post($this->path('/messages'), $this->body([
             'poll' => self::filled(['question' => $question, 'options' => array_values($options), 'multiple' => $multiple ?: null]),
         ])));
+    }
+
+    /**
+     * Mostra "digitando…" (ou "gravando áudio…", com 'recording') no celular
+     * do contato por alguns segundos. Repetições em menos de 4 s são ignoradas.
+     */
+    public function typing(string $state = 'composing'): array
+    {
+        return $this->result($this->http()->post($this->path('/typing'), ['state' => $state]));
+    }
+
+    /** Reage a uma mensagem ($messageId: o `id` da mensagem no chat); emoji null tira a reação. */
+    public function react(string $messageId, ?string $emoji): array
+    {
+        return $this->result($this->http()->post($this->path("/messages/{$messageId}/react"), ['emoji' => $emoji]));
+    }
+
+    /** Troca o texto de uma mensagem de texto enviada por este número (até 15 minutos depois). */
+    public function editMessage(string $messageId, string $content): array
+    {
+        return $this->result($this->http()->patch($this->path("/messages/{$messageId}"), ['content' => $content]));
+    }
+
+    /** Apaga para todos uma mensagem enviada por este número (até 2 dias depois); ela fica no chat, marcada como apagada. */
+    public function deleteMessage(string $messageId): array
+    {
+        return $this->result($this->http()->delete($this->path("/messages/{$messageId}")));
     }
 
     /** Zera as não lidas (e manda o ✓✓ azul, se o número estiver configurado para isso). */
@@ -128,7 +156,7 @@ class Conversation extends Resource
             return null;
         }
 
-        $response = Http::get($url);
+        $response = NotifyHttp::upload(NotifyHttp::client())->get($url);
 
         return $response->successful() ? $response->body() : null;
     }

@@ -8,9 +8,10 @@ namespace RiseTechApps\Notify\Server;
  */
 class OptOuts extends Resource
 {
-    public function all(string $channel = 'sms', ?string $search = null): array
+    /** Números fora das campanhas do canal; $search: telefone inteiro ou parte. Paginado (25 por página, até 100). */
+    public function all(string $channel = 'sms', ?string $search = null, ?int $page = null, ?int $perPage = null): array
     {
-        return $this->result($this->http()->get('/api/v1/sms-opt-outs', self::filled(['channel' => $channel, 'search' => $search])));
+        return $this->result($this->http()->get('/api/v1/sms-opt-outs', self::filled(['channel' => $channel, 'search' => $search, 'page' => $page, 'per_page' => $perPage])));
     }
 
     /** Bloqueia números (não recebem mais campanhas do canal). */

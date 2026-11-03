@@ -2,7 +2,7 @@
 
 namespace RiseTechApps\Notify;
 
-use Illuminate\Support\Facades\Http;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 /**
  * Recurso de campanhas no servidor — listagem, detalhe e cancelamento.
@@ -57,6 +57,7 @@ class ServerCampaignQuery
         return $this;
     }
 
+    /** Criadas a partir desta data (Y-m-d, inclusive). */
     public function from(string $date): static
     {
         $this->params['from'] = $date;
@@ -64,6 +65,7 @@ class ServerCampaignQuery
         return $this;
     }
 
+    /** Criadas até esta data (Y-m-d, inclusive). */
     public function to(string $date): static
     {
         $this->params['to'] = $date;
@@ -156,8 +158,7 @@ class ServerCampaignQuery
 
     protected function http()
     {
-        return Http::withHeaders(['X-API-KEY' => $this->apiKey])
-            ->acceptJson()
+        return NotifyHttp::client(['X-API-KEY' => $this->apiKey])
             ->baseUrl($this->apiUrl);
     }
 }

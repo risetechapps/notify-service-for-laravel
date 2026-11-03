@@ -3,7 +3,7 @@
 namespace RiseTechApps\Notify;
 
 use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Support\Facades\Http;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 class ServerChannelQuery
 {
@@ -200,8 +200,7 @@ class ServerChannelQuery
 
     protected function http(): PendingRequest
     {
-        return Http::withHeaders(['X-API-KEY' => $this->apiKey])
-            ->acceptJson()
+        return NotifyHttp::client(['X-API-KEY' => $this->apiKey])
             ->baseUrl($this->apiUrl);
     }
 }

@@ -2,7 +2,7 @@
 
 namespace RiseTechApps\Notify;
 
-use Illuminate\Support\Facades\Http;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 /**
  * Builder de configuração de credencial de driver no servidor (CRUD).
@@ -522,8 +522,7 @@ class ServerDriverConfig
 
     protected function http()
     {
-        return Http::withHeaders(['X-API-KEY' => $this->apiKey])
-            ->acceptJson()
+        return NotifyHttp::client(['X-API-KEY' => $this->apiKey])
             ->baseUrl($this->apiUrl);
     }
 }

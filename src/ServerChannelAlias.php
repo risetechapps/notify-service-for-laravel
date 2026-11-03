@@ -2,7 +2,7 @@
 
 namespace RiseTechApps\Notify;
 
-use Illuminate\Support\Facades\Http;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 /**
  * Aliases de canal de uma configuração (Telegram/Slack) — nomes lógicos → destino real.
@@ -68,8 +68,7 @@ class ServerChannelAlias
 
     protected function http()
     {
-        return Http::withHeaders(['X-API-KEY' => $this->apiKey])
-            ->acceptJson()
+        return NotifyHttp::client(['X-API-KEY' => $this->apiKey])
             ->baseUrl($this->apiUrl);
     }
 }

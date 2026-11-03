@@ -9,9 +9,10 @@ namespace RiseTechApps\Notify\Server;
  */
 class ContactLists extends Resource
 {
-    public function all(?string $channel = null): array
+    /** Listas, da mais recente. Paginado (50 por página, até 100). */
+    public function all(?string $channel = null, ?int $page = null, ?int $perPage = null): array
     {
-        return $this->result($this->http()->get('/api/v1/contact-lists', self::filled(['channel' => $channel])));
+        return $this->result($this->http()->get('/api/v1/contact-lists', self::filled(['channel' => $channel, 'page' => $page, 'per_page' => $perPage])));
     }
 
     public function get(string $id): array
@@ -34,9 +35,10 @@ class ContactLists extends Resource
         return $this->result($this->http()->delete("/api/v1/contact-lists/{$id}"));
     }
 
-    public function members(string $id, ?string $search = null, ?int $page = null): array
+    /** Contatos da lista; $search: contato ou nome. Paginado (50 por página, até 200). */
+    public function members(string $id, ?string $search = null, ?int $page = null, ?int $perPage = null): array
     {
-        return $this->result($this->http()->get("/api/v1/contact-lists/{$id}/members", self::filled(['search' => $search, 'page' => $page])));
+        return $this->result($this->http()->get("/api/v1/contact-lists/{$id}/members", self::filled(['search' => $search, 'page' => $page, 'per_page' => $perPage])));
     }
 
     /**

@@ -40,19 +40,59 @@ class WhatsAppNumber extends Resource
         return $this->result($this->http()->get('/api/v1/configurations', ['channel' => 'whatsapp']));
     }
 
-    /** Estado da conexão e, enquanto não conecta, o QR code (data URI); com o telefone, também o pairing_code. */
-    public function state(?string $phone = null): array
+    /**
+     * Estado da conexão e, enquanto não conecta, o QR code (data URI); com o
+     * telefone, também o pairing_code. Cada pedido com telefone gera um código
+     * novo e invalida o anterior: peça uma vez e acompanhe com $qr = false
+     * (só o estado, sem QR nem código novo).
+     */
+    public function state(?string $phone = null, bool $qr = true): array
     {
-        return $this->result($this->http()->get($this->path(), self::filled(['phone' => $phone])));
+        return $this->result($this->http()->get($this->path(), self::filled(['phone' => $phone, 'qr' => $qr ? null : 0])));
+    }
+
+    /**
+     * Reinicia a sessão do número na W-API (reconecta sem QR). É o primeiro
+     * passo quando o número aparece como "sem receber" (`connection.stalled_at`);
+     * a marca sai sozinha na próxima mensagem ou recibo.
+     */
+    public function restart(): array
+    {
+        $result = $this->result($this->http()->post($this->path('/restart')));
+        $this->forget('chat.numbers');
+
+        return $result;
+    }
+
+    /** Resposta automática ao SAIR e ao VOLTAR: `enabled`, os textos e os `defaults`. */
+    public function optOutReply(): array
+    {
+        return $this->result($this->http()->get($this->path('/opt-out')));
+    }
+
+    /**
+     * Liga/desliga a resposta ao SAIR e ao VOLTAR. Texto null (ou vazio) usa o
+     * padrão do servidor; $enabled = false não responde nada.
+     */
+    public function updateOptOutReply(bool $enabled, ?string $optOutMessage = null, ?string $optInMessage = null): array
+    {
+        return $this->result($this->http()->put($this->path('/opt-out'), [
+            'enabled' => $enabled,
+            'opt_out_message' => $optOutMessage,
+            'opt_in_message' => $optInMessage,
+        ]));
     }
 
     /** Desconecta o número (para voltar, leia o QR de novo). */
     public function logout(): array
     {
-        return $this->result($this->http()->post($this->path('/logout')));
+        $result = $this->result($this->http()->post($this->path('/logout')));
+        $this->forget('chat.numbers');
+
+        return $result;
     }
 
-    /** Avisos de queda e volta (e-mail e/ou webhook whatsapp.disconnected/reconnected/paused). */
+    /** Avisos de queda e volta (e-mail e/ou webhook whatsapp.disconnected/reconnected/stalled/paused). */
     public function alerts(): array
     {
         return $this->result($this->http()->get($this->path('/alerts')));
@@ -76,13 +116,50 @@ class WhatsAppNumber extends Resource
      */
     public function updateChatSettings(array $settings): array
     {
-        return $this->result($this->http()->put($this->path('/chat'), $settings));
+        $result = $this->result($this->http()->put($this->path('/chat'), $settings));
+        $this->forget('chat.numbers');
+
+        return $result;
     }
 
     /** Proteção do número: envios e contatos novos do dia, limites, aquecimento, saúde e pausa. */
     public function protection(): array
     {
         return $this->result($this->http()->get($this->path('/protection')));
+    }
+
+    /**
+     * Quanto o número ainda pode mandar hoje, já com o aquecimento aplicado,
+     * para conferir antes de um envio grande:
+     *
+     *   $cap = NotifyQuery::server()->whatsappNumber($id)->capacity()['data'];
+     *   if ($cap['paused'] || $cap['new_contacts'] < count($clientesNovos)) { … }
+     *
+     * sends: envios restantes hoje; new_contacts: contatos novos (quem nunca
+     * escreveu ao número) restantes hoje; paused: motivo da pausa ou null;
+     * warmup_factor: fração dos limites liberada pela idade do número
+     * (0.2 no 1º dia … 1.0 a partir de 14 dias); age_days.
+     *
+     * @return array{status: bool, data?: array{sends: int, new_contacts: int, paused: ?string, warmup_factor: float, age_days: int}}
+     */
+    public function capacity(): array
+    {
+        $summary = $this->protection();
+
+        if (isset($summary['http']) || ! isset($summary['data'])) {
+            return $summary;
+        }
+
+        $data = $summary['data'];
+        $today = (array) ($data['today'] ?? []);
+
+        return ['status' => true, 'data' => [
+            'sends' => max(0, (int) ($today['daily_limit'] ?? 0) - (int) ($today['sent'] ?? 0)),
+            'new_contacts' => max(0, (int) ($today['new_contacts_limit'] ?? 0) - (int) ($today['new_contacts'] ?? 0)),
+            'paused' => $data['paused']['reason'] ?? null,
+            'warmup_factor' => (float) ($data['warmup']['factor'] ?? 1.0),
+            'age_days' => (int) ($data['warmup']['age_days'] ?? 0),
+        ]];
     }
 
     /** Retoma os envios pausados pela proteção (as campanhas pausadas junto voltam a andar). */

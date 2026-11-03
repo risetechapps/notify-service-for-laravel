@@ -6,6 +6,32 @@ O formato é baseado em [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Não lançado]
 
+### Adicionado (cobertura completa do servidor, 03/11/2026)
+
+Conferido contra as 161 rotas da API do notify-server: agora o pacote cobre todas.
+
+- **Número de WhatsApp:** `restart()` (reinicia a sessão sem QR), `optOutReply()`/`updateOptOutReply()` (resposta ao SAIR e ao VOLTAR) e `state($telefone, qr: false)` para acompanhar o pareamento sem gerar código novo.
+- **Chat:** `typing()`, `react()`, `editMessage()` e `deleteMessage()` na conversa; `messages(since: …)`; `startPoll()` e `quotedId` no `start()`.
+- **Autoatendimento:** `simulate(..., $editingId)`.
+- **Autoatendimento sem reescrever o fluxo:** `updateBusinessHours()` (horário de atendimento em formato curto, como `'08:00-18:00'`), `updateAwayMessage()` (mensagem de fora do expediente), `disableBusinessHours()` e `patch()` (troca só alguns campos). Leem o fluxo salvo e mantêm o resto.
+- **Dias sem expediente no autoatendimento:** `addClosedDate()`, `addClosedDates()`, `removeClosedDate()` e `closedDates()`. Fecha um dia (feriado, folga) com mensagem própria ou a de fora do horário, sem mexer no horário da semana; as datas passadas saem ao salvar. Precisa do notify-server com `business_hours.closed_dates`.
+- **Resumo da fila:** `chat()->summary()` (na fila, minhas, no bot e não lidas, numa chamada).
+- **Tempo real no front-end sem polling** (`notify.broadcast`): cada `NotifyWhatsAppEvent` é retransmitido pelo Broadcasting do Laravel nos canais privados `notify.whatsapp` e `notify.whatsapp.{configuration_id}`. Desligado por padrão.
+- **Tempo limite e novas tentativas** (`notify.http`) em todas as chamadas ao servidor: 20 s (arquivos, 120 s), conexão em 5 s. Leituras (GET) tentam de novo até 2 vezes em falha de conexão ou 5xx; envios e ações do chat nunca repetem sozinhos. Antes valia o padrão do Laravel (30 s, sem nova tentativa).
+- **Cache curto** (`notify.cache`, 30 s) de `team()->members()`, `chat()->numbers()` e `botFlows()->all()`, separado por atendente; quem altera pelo pacote limpa o cache. `fresh: true` busca na hora.
+- **Proteção do número de WhatsApp:** `whatsappNumber($id)->capacity()` (envios e contatos novos que ainda cabem hoje, pausa e aquecimento) e `NotifyFailedEvent::protectionReason()` (`daily_limit`, `new_contacts`, `duplicate`, `paused`…). `NotifyFailedEvent` ganha `response` e `status`.
+- **README:** `start()` do chat para quem nunca escreveu ao número agora passa pela proteção no servidor (limite diário, contatos novos, mensagem repetida, pausa) e pode voltar `429` com `reason`; documentado em "Proteção do número".
+- **README:** seções "Vários números" (qual número envia, chat e configurações por número) e "Proteção do número" (regras, aquecimento, motivos do 429 e como reagir).
+- **README:** seção de autoatendimento com o formato completo do fluxo (menu, palavras-chave, horário, ações, anexos e simulação).
+- **Conta:** `quota()` (`GET /usage`: plano, cota, limite por minuto) e `requestsDaily()` (`GET /usage/daily`).
+- **Listas:** busca e paginação em `templates()->all()`, `contactLists()->all()`, `members()` e `optOuts()->all()`.
+
+### Corrigido
+
+- **Recusa da proteção do número repetia na fila.** O 429 com `reason` (limite do dia, contatos novos, mensagem repetida, número pausado) era tratado como falha passageira e a notificação com fila tentava de novo em segundos, sem chance de passar. Agora devolve o erro sem repetir; os outros 429 continuam repetindo.
+- **Filtros da listagem de campanhas.** `status()`, `tag()`, `from()` e `to()` eram ignorados pelo servidor; o notify-server passa a aplicá-los (status, qualquer uma das tags, período de criação).
+- **README:** o exemplo de entregas de webhook filtrava por `status`, que não existe; o filtro é `success=0`.
+
 Alinha o pacote às mudanças de canal do notify-server (revisão de 2026-10-30/31). Compatível com o notify-server a partir de 007591e (revisão de canais). Atualize antes do deploy do servidor: o formato de assinatura mudou.
 
 ### Corrigido

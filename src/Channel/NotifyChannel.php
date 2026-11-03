@@ -8,13 +8,13 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Facades\Event;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use RiseTechApps\Notify\Events\NotifyFailedEvent;
 use RiseTechApps\Notify\Events\NotifySendingEvent;
 use RiseTechApps\Notify\Events\NotifySentEvent;
 use RiseTechApps\Notify\Exceptions\NotifyDeliveryException;
 use RiseTechApps\Notify\Notify;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 abstract class NotifyChannel
 {
@@ -101,8 +101,7 @@ abstract class NotifyChannel
                 ...(method_exists($message, 'requestHeaders') ? $message->requestHeaders() : []),
             ];
 
-            $response = Http::withHeaders($headers)
-                ->acceptJson()
+            $response = NotifyHttp::client($headers)
                 ->post("{$this->apiUrl}/api/v1/send/{$channel}", $data);
         } catch (ConnectionException $exception) {
             $this->failed($notifiable, $notification, $channel, $exception, ['exception' => $exception]);
@@ -128,9 +127,9 @@ abstract class NotifyChannel
             $this->failed($notifiable, $notification, $channel, new Exception($response->body()), [
                 'http' => $response->status(),
                 'response' => $errorBody,
-            ]);
+            ], (array) $errorBody, $response->status());
 
-            if ($this->shouldThrow($notification) && NotifyDeliveryException::isRetryable($response->status())) {
+            if ($this->shouldThrow($notification) && NotifyDeliveryException::isRetryable($response->status(), (array) $errorBody)) {
                 throw new NotifyDeliveryException($channel, $response->status(), (array) $errorBody);
             }
 
@@ -172,9 +171,9 @@ abstract class NotifyChannel
         return ['Idempotency-Key' => 'notify:'.hash('sha256', $notification->id.'|'.$channel.'|'.json_encode($data))];
     }
 
-    protected function failed($notifiable, Notification $notification, string $channel, Exception $exception, array $context): void
+    protected function failed($notifiable, Notification $notification, string $channel, Exception $exception, array $context, array $response = [], int $status = 0): void
     {
-        Event::dispatch(new NotifyFailedEvent($notifiable, $notification, $exception, $channel));
+        Event::dispatch(new NotifyFailedEvent($notifiable, $notification, $exception, $channel, $response, $status));
 
         Log::error('Error by sending notification', [
             ...$this->logContext($notifiable, $notification, $channel),

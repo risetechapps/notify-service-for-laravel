@@ -8,9 +8,10 @@ namespace RiseTechApps\Notify\Server;
  */
 class Templates extends Resource
 {
-    public function all(?string $channel = null): array
+    /** Modelos, do mais recente; $search procura no nome. Paginado (50 por página, até 100). */
+    public function all(?string $channel = null, ?string $search = null, ?int $page = null, ?int $perPage = null): array
     {
-        return $this->result($this->http()->get('/api/v1/templates', self::filled(['channel' => $channel])));
+        return $this->result($this->http()->get('/api/v1/templates', self::filled(['channel' => $channel, 'search' => $search, 'page' => $page, 'per_page' => $perPage])));
     }
 
     public function get(string $id): array

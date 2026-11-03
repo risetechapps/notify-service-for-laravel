@@ -43,9 +43,13 @@ Client package para o servidor [NotifyKit](https://notifykit.app.br). Integra **
 - [Eventos Laravel](#eventos-laravel)
 - [WhatsApp: números, chat e equipe](#whatsapp-números-chat-e-equipe)
   - [Números](#números)
+  - [Vários números](#vários-números)
+  - [Proteção do número](#proteção-do-número)
   - [Chat](#chat)
+  - [Autoatendimento (bot)](#autoatendimento-bot)
   - [Equipe e atendentes do seu sistema](#equipe-e-atendentes-do-seu-sistema)
   - [Eventos do WhatsApp (webhook e cursor)](#eventos-do-whatsapp-webhook-e-cursor)
+  - [Tempo real no front-end (sem polling)](#tempo-real-no-front-end-sem-polling)
 - [Recursos da conta](#recursos-da-conta)
 - [Configurações de driver](#configurações-de-driver)
 
@@ -109,8 +113,38 @@ return [
     'webhook_secret'    => env('NOTIFY_SERVICE_WEBHOOK_SECRET', ''),
     'webhook_verify'    => env('NOTIFY_SERVICE_WEBHOOK_VERIFY', true),
     'webhook_tolerance' => env('NOTIFY_SERVICE_WEBHOOK_TOLERANCE', 300),
+
+    // Chamadas ao servidor: tempo limite e nova tentativa (só leituras, só conexão/5xx)
+    'http' => [
+        'timeout'         => env('NOTIFY_HTTP_TIMEOUT', 20),
+        'connect_timeout' => env('NOTIFY_HTTP_CONNECT_TIMEOUT', 5),
+        'upload_timeout'  => env('NOTIFY_HTTP_UPLOAD_TIMEOUT', 120),
+        'retries'         => env('NOTIFY_HTTP_RETRIES', 2),
+        'retry_sleep'     => env('NOTIFY_HTTP_RETRY_SLEEP', 200), // ms
+    ],
+
+    // Cache curto de equipe, números do chat e fluxos (0 desliga)
+    'cache' => [
+        'ttl'   => env('NOTIFY_CACHE_TTL', 30),
+        'store' => env('NOTIFY_CACHE_STORE'),
+    ],
+
+    // Retransmite os eventos do chat para o front-end (Reverb, Pusher…)
+    'broadcast' => [
+        'enabled'    => env('NOTIFY_BROADCAST', false),
+        'channel'    => env('NOTIFY_BROADCAST_CHANNEL', 'notify.whatsapp'),
+        'events'     => [],
+        'connection' => env('NOTIFY_BROADCAST_CONNECTION'),
+        'queue'      => env('NOTIFY_BROADCAST_QUEUE'),
+    ],
 ];
 ```
+
+**Tempo limite e novas tentativas.** Toda chamada ao servidor desiste em `timeout` segundos (os
+arquivos, em `upload_timeout`): com o servidor lento, a tela de quem chamou não fica presa. Só
+**leituras** (GET) tentam de novo, e só em falha de conexão ou erro 5xx. Envio, resposta no
+chat, transferência etc. nunca repetem sozinhos, porque a segunda tentativa poderia mandar a
+mensagem duas vezes. Erros 4xx (validação, 429) voltam na hora com `http`.
 
 Quando `routes = true`, o package registra automaticamente:
 
@@ -1920,7 +1954,8 @@ public function routeNotificationForWhatsapp(): string
 > MP4 é convertido (se não der, vai como documento).
 
 > A **proteção do número** controla o ritmo, o limite diário e os contatos novos. Acima
-> do limite, a resposta é `429` com o motivo; veja `whatsappNumber($id)->protection()`.
+> do limite, a resposta é `429` com o motivo (`reason`), e a notificação na fila **não** tenta
+> de novo. Veja [Proteção do número](#proteção-do-número).
 
 ---
 
@@ -2802,8 +2837,8 @@ use RiseTechApps\Notify\NotifyQuery;
 $result = NotifyQuery::server()->campaigns('mail')   // 'sms' | 'mail' | 'whatsapp' (email vira mail)
     ->status('completed')           // pending|processing|paused|completed|failed|cancelled
     ->tag('newsletter')             // opcional
-    ->from('2026-01-01')
-    ->to('2026-03-31')
+    ->from('2026-01-01')            // criadas a partir de (inclusive)
+    ->to('2026-03-31')              // criadas até (inclusive)
     ->perPage(25)
     ->get();
 
@@ -2909,21 +2944,143 @@ $estado = NotifyQuery::server()->whatsappNumber($id)->state('5521999998888'); //
 | Método (`whatsappNumber($id)`) | Descrição |
 |---|---|
 | `create(label?, asDefault?)` · `all()` | Cria (sem id) e lista os números |
-| `state(telefone?)` · `logout()` | Estado/QR code (com o telefone, também o `pairing_code`) e desconexão |
-| `alerts()` · `updateAlerts([...])` | Avisos de queda e volta: e-mail e/ou webhook (`whatsapp.disconnected`, `reconnected`, `paused`) |
+| `capacity()` | Quanto ainda dá para mandar hoje: `sends`, `new_contacts`, `paused`, `warmup_factor`, `age_days` |
+| `state(telefone?, qr?)` · `logout()` | Estado/QR code (com o telefone, também o `pairing_code`; `qr: false` só o estado, sem gerar código novo) e desconexão |
+| `restart()` | Reinicia a sessão sem QR: o primeiro passo quando o número aparece como "sem receber" (`connection.stalled_at`) |
+| `optOutReply()` · `updateOptOutReply(enabled, textoSair?, textoVoltar?)` | Resposta automática ao SAIR e ao VOLTAR (texto null usa o padrão) |
+| `alerts()` · `updateAlerts([...])` | Avisos de queda e volta: e-mail e/ou webhook (`whatsapp.disconnected`, `reconnected`, `stalled`, `paused`) |
 | `chatSettings()` · `updateChatSettings([...])` | Chat do número: fluxo do bot, avisos ao contato, fechamento por inatividade, webhook e filtro de eventos. Sempre envie `enabled` e `mark_read` |
 | `protection()` · `resumeProtection()` | Uso do dia, limites, aquecimento e saúde; retoma os envios pausados |
 
 > Um número só fica conectado em uma configuração: conectar o mesmo número em outra é recusado.
+
+### Vários números
+
+Cada número é uma configuração com `id` (UUID) e `label` (ex.: "Vendas", "Suporte"). Onde o
+pacote pede o número, aceita os dois.
+
+```php
+NotifyQuery::server()->whatsappNumber()->all();   // id, label, número, qual é o padrão…
+```
+
+**Qual número envia**, em ordem:
+
+1. `->configId('Suporte')` na mensagem ou na campanha;
+2. `NOTIFY_WHATSAPP_CONFIG_ID` no `.env` (`notify.whatsapp.config_id`);
+3. o número marcado como padrão na conta (`create(..., asDefault: true)` ou no painel).
+
+```php
+// Notificação
+(new NotifyWhatsApp)->to('5521999998888')->content('Seu chamado foi aberto.')->configId('Suporte');
+
+// Campanha
+NotifyCampaignBuilder::whatsapp()->name('Promoção')->configId('Vendas')->content('…')->contacts($lista)->send();
+
+// Envio multicanal: vale o ->configId() de cada mensagem
+```
+
+**No chat**, a conversa já pertence a um número:
+
+| Ação | Como escolhe o número |
+|---|---|
+| Começar conversa | 1º argumento: `$chat->as($user->id)->start($idDoNumero, $telefone, 'Olá!')` |
+| Responder, transferir, encerrar | Não escolhe: sai pelo número da conversa |
+| Listar só de um número | `$chat->conversations()->number($idDoNumero)->get()` |
+| Eventos de um número | `$chat->events()->number($idDoNumero)`; no front, o canal `notify.whatsapp.{id}` |
+
+**Configurações são por número**: bot, horário, mensagens, webhook, alertas e proteção.
+
+```php
+NotifyQuery::server()->whatsappNumber($idVendas)->updateChatSettings(['enabled' => true, 'mark_read' => true, 'bot_flow_id' => $fluxoVendas]);
+NotifyQuery::server()->whatsappNumber($idSuporte)->updateChatSettings(['enabled' => true, 'mark_read' => true, 'bot_flow_id' => $fluxoSuporte]);
+```
+
+### Proteção do número
+
+Na conexão não oficial, o WhatsApp bane o número que manda muito, rápido, igual e para quem
+nunca falou com ele. O **servidor** protege cada número; o pacote não precisa fazer nada para
+isso funcionar, mas ajuda a enxergar e reagir aos limites.
+
+| Regra | O que o servidor faz |
+|---|---|
+| Ritmo | Envios do mesmo número saem espaçados (alguns segundos, aleatório). Chat e bot só um intervalo mínimo |
+| Limite diário | Total de envios por dia |
+| Contatos novos | Limite diário para quem **nunca escreveu** ao número (o maior risco de banimento) |
+| Aquecimento | Número recém-conectado começa com uma fração dos limites: 20% nos primeiros dias, 40% a partir do 3º, 70% a partir do 7º e 100% a partir do 14º |
+| Mensagem repetida | O mesmo texto para muitos destinatários em pouco tempo é recusado (personalize ou use campanha) |
+| Saúde | Muitos não entregues, números sem WhatsApp ou pedidos de SAIR **pausam** o número e avisam |
+
+Os valores exatos (limite diário, contatos novos por dia…) são os do servidor; `capacity()` e
+`protection()` mostram os do número, já com o aquecimento.
+
+**Antes de um envio grande**, confira:
+
+```php
+$cap = NotifyQuery::server()->whatsappNumber($id)->capacity()['data'];
+// ['sends' => 50, 'new_contacts' => 8, 'paused' => null, 'warmup_factor' => 0.2, 'age_days' => 1]
+
+if ($cap['paused']) {
+    // número pausado pela saúde: veja o motivo e retome com resumeProtection()
+}
+```
+
+**Quando passa do limite**, o envio volta `429` com `reason`:
+
+| `reason` | Significa | Resolve |
+|---|---|---|
+| `daily_limit` | Acabou o limite de envios de hoje | Amanhã, ou outro número |
+| `new_contacts` | Acabou o limite de contatos novos de hoje | Amanhã; quem já conversou continua recebendo |
+| `duplicate` | Mesmo texto para muitos em pouco tempo | Personalizar (ex.: `{name}`) ou usar campanha |
+| `paused` · `undelivered` · `invalid_numbers` · `opt_outs` | Número pausado pela saúde | Corrigir a lista e `resumeProtection()` |
+
+- **Envio síncrono**: o canal devolve o corpo com `reason`.
+- **Notificação na fila**: esse 429 **não** tenta de novo (repetir em segundos não resolve e
+  gastaria a fila). Outros 429 (limite de requisições da API) continuam tentando.
+- **Evento**: `NotifyFailedEvent::protectionReason()` diz o motivo, para avisar o usuário:
+
+```php
+public function handle(NotifyFailedEvent $event): void
+{
+    if ($reason = $event->protectionReason()) {
+        // ex.: 'new_contacts' → "O número atingiu o limite de contatos novos de hoje"
+    }
+}
+```
+
+**Campanhas** já seguem a proteção sozinhas: quem já conversou com o número sai primeiro, os
+contatos novos se distribuem pelos dias e, se a saúde cair, a campanha pausa
+(`campaign.paused`, `reason: number_paused`) e volta com `resumeProtection()`.
+
+**Chat**: responder quem escreveu (atendente ou bot) não conta nos limites, só respeita o
+intervalo mínimo. Já `start()` para quem **nunca escreveu** ao número passa pelas mesmas regras
+de um envio: conta no limite diário e no de contatos novos, e pode ser recusado por mensagem
+repetida ou número pausado. Recusado, volta `429` com `reason` e a conversa não é criada:
+
+```php
+$out = $chat->as($user->id)->start($configId, '5521999998888', 'Olá! Aqui é da Loja.');
+
+if (($out['http'] ?? null) === 429) {
+    // $out['reason']: 'new_contacts', 'daily_limit', 'duplicate' ou 'paused'
+}
+```
+
+Com quem já escreveu, `start()` não conta (é como responder). Chamar a mesma pessoa de novo no
+dia não conta duas vezes como contato novo.
+
+**Dicas para número novo**: nos primeiros 14 dias, prefira responder quem procura a empresa,
+comece com poucos contatos novos por dia, personalize os textos e use campanhas (que dosam o
+envio) em vez de laços de `notify()`.
 
 ### Chat
 
 ```php
 $chat = NotifyQuery::server()->chat();
 
-$chat->numbers();                                        // números com o chat ligado
+$chat->numbers();                                        // números com o chat ligado (cache curto; numbers(fresh: true))
+$chat->as($user->id)->summary();                         // ['queue' => 3, 'mine' => 2, 'bot' => 5, 'unread' => 4, ...]
 $chat->conversations()->status('queue')->search('Ana')->get(); // queue|bot|open|closed|all
 $chat->conversation($id)->messages();                    // as 50 mais recentes (->messages($antesDeId))
+$chat->conversation($id)->messages(since: $serverTime);  // só as novas ou alteradas desde o server_time anterior
 
 // Agindo como o atendente do SEU sistema (cabeçalhos X-Agent-Id / X-Agent-Name):
 $conversa = $chat->as($user->id, $user->name)->conversation($id);
@@ -2931,11 +3088,16 @@ $conversa->handoff();                       // assume (do bot ou da fila)
 $conversa->reply('Bom dia! Em que posso ajudar?');
 $conversa->replyFile(storage_path('app/boleto.pdf'), 'Segue o boleto');
 $conversa->replyPoll('Podemos encerrar?', ['Sim', 'Não']);
+$conversa->typing();                        // "digitando…" no celular do contato ('recording' = gravando áudio)
+$conversa->react($mensagemId, '👍');         // null tira a reação
+$conversa->editMessage($mensagemId, 'Corrigindo: amanhã às 10h'); // até 15 min
+$conversa->deleteMessage($mensagemId);      // apaga para todos (até 2 dias); fica marcada no chat
 $conversa->assign($outroMembroId);          // transfere (null devolve à fila)
 $conversa->close();
 
 // Nova conversa a partir de um número (o 4º argumento, opcional, é o webhook só dela)
 $chat->as($user->id)->start($configId, '5521999998888', 'Olá! Aqui é da Loja.', 'https://crm.exemplo.com/whatsapp');
+$chat->as($user->id)->startPoll($configId, '5521999998888', 'Qual horário prefere?', ['Manhã', 'Tarde']);
 
 // Webhook por conversa: os eventos dela vão só para ele até encerrar; null volta ao do número
 $conversa->webhook('https://crm.exemplo.com/whatsapp')->reply('Vou te ajudar por aqui.');
@@ -2951,22 +3113,171 @@ $arquivo = $conversa->downloadMedia($mensagem);   // conteúdo, ou null sem míd
 
 | `conversation($id)` | Descrição |
 |---|---|
-| `get()` · `messages(before?, limit?)` | Conversa e mensagens |
+| `get()` · `messages(before?, limit?, since?)` | Conversa e mensagens |
 | `reply(text, quotedId?)` · `replyFile(path, caption?)` · `replyPoll(q, options)` | Respostas |
+| `typing(state?)` · `react(messageId, emoji\|null)` · `editMessage(messageId, text)` · `deleteMessage(messageId)` | Digitando, reação, editar (15 min) e apagar para todos (2 dias) |
 | `read()` | Zera as não lidas |
 | `handoff()` · `assign(memberId\|null)` · `close()` · `reopen()` | Atendimento |
 | `rename(name)` | Nome do contato |
 | `webhook(url\|null)` | Webhook só desta conversa, enviado na próxima resposta ou transferência |
 | `downloadMedia(message)` | Conteúdo da mídia de uma mensagem |
 
-Autoatendimento: `$chat->botFlows()` → `all()`, `get()`, `create(name, definition)`,
-`update()`, `delete()`, `uploadMedia(path)` e `simulate(definition, state, input)`.
+Começar conversa: `start(configId, telefone, texto, webhookUrl?, quotedId?)` ou
+`startPoll(configId, telefone, pergunta, opções, múltipla?, webhookUrl?)`.
+
+### Autoatendimento (bot)
+
+Cada número usa um **fluxo principal**: um menu numerado, palavras-chave, horário de
+atendimento e as mensagens do bot. Outros fluxos entram como subfluxos (uma opção do menu
+abre outro fluxo). O fluxo fica salvo no servidor; o número aponta para ele em
+`updateChatSettings(['bot_flow_id' => …])`.
+
+```php
+$flows = NotifyQuery::server()->chat()->botFlows();
+
+$fluxo = $flows->create('Atendimento', [
+    'greeting' => 'Olá! Aqui é a Loja Exemplo.',
+    'menu' => [
+        'text' => 'Como podemos ajudar?',
+        'options' => [
+            ['label' => '2ª via do boleto', 'action' => ['type' => 'reply', 'text' => 'Acesse loja.com/boleto', 'then' => 'close']],
+            ['label' => 'Financeiro', 'action' => ['type' => 'menu', 'menu' => [
+                'text' => 'Financeiro:',
+                'options' => [
+                    ['label' => 'Negociar dívida', 'action' => ['type' => 'handoff', 'text' => 'Vou te passar para o financeiro.']],
+                    ['label' => 'Voltar', 'action' => ['type' => 'back']],
+                ],
+            ]]],
+            ['label' => 'Falar com um atendente', 'action' => ['type' => 'handoff']],
+        ],
+    ],
+    'keywords' => [
+        ['words' => ['boleto', 'pix'], 'action' => ['type' => 'reply', 'text' => 'Acesse loja.com/boleto']],
+        ['words' => ['atendente', 'humano'], 'action' => ['type' => 'handoff']],
+    ],
+    'business_hours' => [
+        'enabled' => true,
+        'timezone' => 'America/Sao_Paulo',
+        'days' => [
+            'mon' => [['start' => '08:00', 'end' => '12:00'], ['start' => '13:00', 'end' => '18:00']],
+            'tue' => [['start' => '08:00', 'end' => '18:00']],
+            // … dia ausente = fechado o dia todo
+        ],
+        'away_message' => 'Estamos fora do horário. Respondemos a partir das 8h.',
+    ],
+    'outside_hours' => 'handoff',
+    'handoff_message' => 'Aguarde, um atendente já vai falar com você.',
+    'close_message' => 'Atendimento encerrado. Obrigado!',
+    'invalid_message' => 'Não entendi. Responda com o número da opção.',
+    'max_invalid' => 3,
+]);
+
+// Liga o chat do número com esse fluxo
+NotifyQuery::server()->whatsappNumber($configId)->updateChatSettings([
+    'enabled' => true, 'mark_read' => true, 'bot_flow_id' => $fluxo['data']['id'],
+]);
+```
+
+**Campos do fluxo (`definition`)**
+
+| Campo | Descrição |
+|---|---|
+| `greeting` | Boas-vindas, antes do menu (opcional) |
+| `menu` | `{ text, options: [{ label, action }] }`: até 9 opções; submenus até 3 níveis. O contato volta com `0` |
+| `keywords` | `[{ words: [...], action }]`: valem em qualquer ponto da conversa (sem acento e sem diferenciar maiúsculas) |
+| `business_hours` | `{ enabled, timezone, days: { sun…sat: [{ start, end }] }, away_message, closed_dates }`. Horários `HH:MM`, o fim não entra. `closed_dates: [{ date, message? }]` são os dias sem expediente |
+| `outside_hours` | Fora do horário: `handoff` (manda `away_message` e passa para a fila) ou `menu` (manda e segue no bot) |
+| `handoff_message` · `close_message` · `invalid_message` | Ao passar ao atendente, ao encerrar e para resposta que não é opção |
+| `max_invalid` | Respostas inválidas antes de passar ao atendente (padrão 3) |
+
+**Ações (`action`)**
+
+| `type` | O que faz |
+|---|---|
+| `reply` | Manda `text` (com `media`, vira a legenda do arquivo) e depois `then`: `menu` (padrão), `handoff` ou `close` |
+| `menu` | Abre o submenu em `menu` |
+| `flow` | Entra no fluxo `flow_id` (subfluxo); `0` no menu dele volta ao anterior. Até 5 fluxos encadeados |
+| `handoff` | Manda `text` (ou `handoff_message`) e passa para a fila do atendente |
+| `close` | Manda `text` (ou `close_message`) e encerra |
+| `back` | Volta ao menu anterior (não vale em palavra-chave) |
+
+Anexo numa resposta: `$media = $flows->uploadMedia(storage_path('app/tabela.pdf'))['data'];` e
+`['type' => 'reply', 'text' => 'Segue a tabela', 'media' => $media]`.
+
+**Horário e mensagens sem reescrever o fluxo.** Estes métodos leem o fluxo salvo, trocam só a
+parte pedida e salvam o resto (menu, palavras-chave…) como estava:
+
+```php
+// Horário: '08:00-18:00', vários intervalos por dia, ou [['start' => …, 'end' => …]]
+$flows->updateBusinessHours($id, [
+    'mon' => ['08:00-12:00', '13:00-18:00'],
+    'tue' => '08:00-18:00',
+    'wed' => '08:00-18:00',
+    'thu' => '08:00-18:00',
+    'fri' => '08:00-17:00',
+    'sat' => '08:00-12:00',
+], 'Estamos fora do horário. Respondemos a partir das 8h.');   // fuso e outside_hours: argumentos opcionais
+
+$flows->updateAwayMessage($id, 'Estamos fora do horário.');   // só a mensagem
+$flows->disableBusinessHours($id);                           // atende a qualquer hora (os dias ficam guardados)
+
+// Qualquer outro campo do fluxo (null remove o campo)
+$flows->patch($id, ['close_message' => 'Até logo!', 'max_invalid' => 2, 'greeting' => null]);
+```
+
+**Dias sem expediente** (feriado, folga, inventário). Fecha um dia sem mexer no horário da
+semana. Nesse dia o bot manda a mensagem do dia, ou, sem ela, a de fora do horário, e segue o
+`outside_hours`. Vale mesmo com o horário desligado (atendimento 24 h), no fuso do fluxo.
+
+```php
+$flows->addClosedDate($id, '2026-12-25', 'Feliz Natal! Voltamos dia 26.');
+$flows->addClosedDate($id, now()->addDay());          // amanhã, com a mensagem de fora do horário
+$flows->addClosedDates($id, [
+    '2026-12-31' => 'Fechados para o Ano-Novo. Voltamos dia 2.',
+    '2027-01-01' => null,
+]);
+$flows->closedDates($id);                             // ['2026-12-25' => 'Feliz Natal!…', '2026-12-31' => …]
+$flows->removeClosedDate($id, '2026-12-31');
+```
+
+Marcar a mesma data de novo troca a mensagem. As datas que já passaram saem da lista ao salvar
+(até 100 datas por fluxo). No `definition` fica em
+`business_hours.closed_dates: [{ date: 'AAAA-MM-DD', message? }]`. Precisa do notify-server com
+suporte a `closed_dates`.
+
+> Ler e salvar são duas chamadas: se o fluxo for editado no painel no meio delas, a edição do
+> painel é sobrescrita. Para mudanças de rotina (horário, mensagens) não costuma ser problema.
+
+Testar antes de salvar, sem enviar nada:
+
+```php
+$passo = $flows->simulate($definicao, null, null);              // começa: boas-vindas + menu
+$passo = $flows->simulate($definicao, $passo['data']['state'], '2'); // o contato escolheu 2
+// $passo['data']['replies'] (o que o bot responderia) e ['action'] (handoff, close ou null)
+```
+
+| `botFlows()` | Descrição |
+|---|---|
+| `all(fresh?)` · `get(id)` | Fluxos (com os números que os usam e quem os abre). `all()` tem cache curto |
+| `create(name, definition)` · `update(id, name, definition)` · `delete(id)` | Cria, substitui e remove (recusado se outro fluxo abre este) |
+| `patch(id, changes, name?)` | Troca só alguns campos do fluxo |
+| `updateBusinessHours(id, days, awayMessage?, timezone?, outsideHours?)` | Horário de atendimento |
+| `updateAwayMessage(id, text)` · `disableBusinessHours(id)` | Mensagem de fora do expediente; desliga o horário |
+| `addClosedDate(id, data, mensagem?)` · `addClosedDates(id, [...])` · `removeClosedDate(id, data)` · `closedDates(id)` | Dias sem expediente |
+| `uploadMedia(path, fileName?)` | Anexo para uma resposta do fluxo |
+| `simulate(definition, state, input, editingId?)` | Simula o fluxo sem enviar |
+
+**Mensagens do chat que não ficam no fluxo** (ficam no número, em `updateChatSettings`):
+`close_message` (encerramento pelo atendente), `transfer_message`, `assume_message`,
+`idle_bot_minutes` / `idle_agent_minutes` (encerra por inatividade), `idle_warning_minutes` e
+`idle_warning_message` (aviso antes de encerrar), `idle_close_message`. Sempre envie
+`enabled` e `mark_read`; os outros campos ausentes ficam como estavam.
 
 ### Equipe e atendentes do seu sistema
 
 ```php
 $team = NotifyQuery::server()->team();
-$team->members();                        // dono e membros: id, external_id, name, role
+$team->members();                        // dono e membros: id, external_id, name, role (cache curto; members(fresh: true))
 $team->syncAgent($user->id, $user->name); // cadastra/atualiza (role: agent | admin)
 $team->updateAgent($user->id, role: 'admin');
 $team->removeAgent($user->id);           // as conversas dele voltam para a fila
@@ -2982,6 +3293,8 @@ evento `NotifyWhatsAppEvent`, por dois caminhos que podem ser usados juntos — 
 
 1. **Webhook**: cadastre `https://sua-app.com/notify/webhook/whatsapp` no chat do número
    (`updateChatSettings(['webhook_url' => ...])`). A assinatura é validada como nos outros.
+   Com a sua app fora do ar, o servidor tenta de novo em 1 min, 5 min, 15 min, 1 h e 6 h; o
+   mesmo evento chega uma vez só, mesmo que uma tentativa anterior tenha passado.
 2. **Cursor** (sem URL pública, ou para conferir o que o webhook perdeu):
 
 ```bash
@@ -3027,6 +3340,63 @@ class ResponderWhatsApp
 | `conversation.opened` · `conversation.updated` · `conversation.closed` | Conversa |
 | `disconnected` · `reconnected` · `paused` | Avisos de conexão (pelo webhook dos alertas) |
 
+### Tempo real no front-end (sem polling)
+
+O front-end dos atendentes **não precisa consultar o servidor em laço**. O caminho é:
+
+```
+notify-server ──webhook──▶ sua app Laravel ──WebSocket (Reverb/Pusher)──▶ navegador dos atendentes
+               (e o comando notify:whatsapp-events como rede de segurança)
+```
+
+O servidor manda cada novidade **uma vez** para a sua app (webhook), e ela repassa por WebSocket
+a todos os atendentes conectados. Com 10 ou 100 atendentes, continua sendo uma entrega do
+servidor e zero consultas repetidas. O front só chama a sua app (e ela o servidor) para
+**agir**: abrir uma conversa, responder, transferir, encerrar.
+
+1. Configure o broadcasting do Laravel (ex.: `php artisan install:broadcasting` com Reverb).
+2. Ligue a retransmissão: `NOTIFY_BROADCAST=true`.
+3. Cadastre o webhook do chat no número (`updateChatSettings(['webhook_url' => 'https://sua-app.com/notify/webhook/whatsapp', ...])`)
+   e, se quiser garantia contra webhook perdido, rode `notify:whatsapp-events` no supervisor. O
+   mesmo evento nunca sai duas vezes.
+4. Autorize os canais em `routes/channels.php`:
+
+```php
+Broadcast::channel('notify.whatsapp', fn ($user) => $user->can('atender-whatsapp'));
+Broadcast::channel('notify.whatsapp.{configurationId}', fn ($user, $configurationId) => $user->podeAtender($configurationId));
+```
+
+5. No front (Laravel Echo):
+
+```js
+Echo.private('notify.whatsapp')
+    .listen('.message.received', (e) => { /* e.conversation, e.message */ })
+    .listen('.conversation.updated', (e) => { /* e.changes: status, assigned_to… */ })
+    .listen('.conversation.opened', (e) => { /* nova conversa na fila */ });
+```
+
+| Canal (privado) | Eventos |
+|---|---|
+| `notify.whatsapp` | Todos da conta |
+| `notify.whatsapp.{configuration_id}` | Só os de um número |
+
+O nome do evento é o tipo sem `whatsapp.` (com ponto na frente no Echo: `.message.received`), e o
+conteúdo é o mesmo do webhook (`event`, `event_id`, `conversation`, `message`, `changes`).
+Para limitar os tipos, use `notify.broadcast.events`; `queue`/`connection` escolhem a fila do
+broadcasting (`sync` transmite na hora).
+
+**Fora do expediente nada se perde.** As mensagens ficam guardadas no notify-server; o aviso
+pelo WebSocket só chega a quem está conectado. Quando o atendente abre a tela, a carga inicial
+(`conversations()` e `summary()`) já traz a fila com as não lidas.
+
+**Ao conectar ou reconectar** o WebSocket, recarregue o que está na tela uma vez
+(`$chat->conversations()->updatedSince($serverTime)->get()` e
+`$conversa->messages(since: $serverTime)` trazem só o que mudou desde o `server_time` anterior).
+Os contadores das abas vêm de `$chat->as($user->id)->summary()`.
+
+> Mensagens muito longas podem passar do limite de tamanho do provedor (10 KB no Pusher e no
+> Reverb padrão). Se for o caso, aumente o limite no Reverb ou filtre os tipos.
+
 ---
 
 ## Recursos da conta
@@ -3036,22 +3406,26 @@ $server = NotifyQuery::server();
 
 // Modelos de mensagem (e-mail, SMS, WhatsApp)
 $server->templates()->create('sms', 'lembrete', 'Olá {name}, sua consulta é amanhã.');
-$server->templates()->all('sms');
+$server->templates()->all('sms');                 // (canal?, busca?, página?, porPágina?)
 
 // Listas de contatos (para ->listId() nas campanhas)
 $lista = $server->contactLists()->create('whatsapp', 'Clientes VIP');
 $server->contactLists()->addMembers($lista['data']['id'], [['phone' => '5521999998888', 'name' => 'Ana']]);
 
 // Descadastros (SAIR ou bloqueio manual)
-$server->optOuts()->all('whatsapp');
+$server->optOuts()->all('whatsapp');              // (canal, busca?, página?, porPágina?)
 $server->optOuts()->add(['5521999998888'], 'whatsapp');
 
-// Entregas de webhook, com reenvio
-$server->webhookDeliveries()->all(['status' => 'failed']);
+// Entregas de webhook, com reenvio (filtros: success, event, notification_id, campaign_id, page, per_page)
+$server->webhookDeliveries()->all(['success' => 0]);   // só as que falharam
 $server->webhookDeliveries()->resend($id);
 
 // Envios por canal e por dia
 $server->usage(30);
+
+// Cota e plano (usadas, restantes, renovação, limite por minuto) e requisições por dia — não gastam cota
+$server->quota();
+$server->requestsDaily(30);
 ```
 
 ---

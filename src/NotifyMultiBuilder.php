@@ -2,8 +2,8 @@
 
 namespace RiseTechApps\Notify;
 
-use Illuminate\Support\Facades\Http;
 use RiseTechApps\Notify\Support\MessageChannel;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 /**
  * Envio para vários canais numa requisição (POST /api/v1/send/multi, até 10).
@@ -95,12 +95,11 @@ class NotifyMultiBuilder
     public function send(): array
     {
         try {
-            $response = Http::withHeaders(array_filter([
+            $response = NotifyHttp::client(array_filter([
                 'X-API-KEY' => config('notify.key'),
                 'Idempotency-Key' => $this->idempotencyKey,
                 'X-Notify-Test' => $this->testMode ? 'true' : null,
             ]))
-                ->acceptJson()
                 ->post(Notify::BASE_URL.'/api/v1/send/multi', $this->toArray());
 
             if ($response->failed()) {

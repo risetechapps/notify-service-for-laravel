@@ -6,8 +6,8 @@ use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Http;
 use RiseTechApps\Notify\Message\EmailTable;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 /**
  * Fluent builder para campanhas de SMS e Email.
@@ -646,11 +646,11 @@ class NotifyCampaignBuilder
 
     protected function http(): PendingRequest
     {
-        return Http::withHeaders(array_filter([
+        return NotifyHttp::client(array_filter([
             'X-API-KEY' => config('notify.key'),
             'Idempotency-Key' => $this->idempotencyKey,
             'X-Notify-Test' => $this->testMode ? 'true' : null,
-        ]))->acceptJson();
+        ]));
     }
 
     /** Envia o arquivo local da mídia (mediaFile) e guarda o path devolvido. */
@@ -660,7 +660,7 @@ class NotifyCampaignBuilder
             return;
         }
 
-        $response = $this->http()
+        $response = NotifyHttp::upload($this->http())
             ->attach('file', file_get_contents($this->mediaLocalFile), $this->mediaFileName ?? basename($this->mediaLocalFile))
             ->post(Notify::BASE_URL.'/api/v1/send/campaigns/whatsapp/media');
 

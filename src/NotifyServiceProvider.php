@@ -2,6 +2,7 @@
 
 namespace RiseTechApps\Notify;
 
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
@@ -14,6 +15,10 @@ class NotifyServiceProvider extends ServiceProvider
         $this->registerPublishes();
         $this->registerChannels();
         $this->registerRoutes();
+
+        // Tempo real no front (notify.broadcast): o relay confere a config a
+        // cada evento, então ligar/desligar em runtime funciona.
+        Event::listen(Events\NotifyWhatsAppEvent::class, fn (Events\NotifyWhatsAppEvent $event) => Events\NotifyWhatsAppBroadcast::relay($event));
     }
 
     #[\Override]

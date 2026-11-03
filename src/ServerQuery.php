@@ -2,8 +2,8 @@
 
 namespace RiseTechApps\Notify;
 
-use Illuminate\Support\Facades\Http;
 use RiseTechApps\Notify\Support\MessageChannel;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 /**
  * Fluent builder para consultas na API do servidor.
@@ -154,6 +154,28 @@ class ServerQuery
     }
 
     /**
+     * Cota e plano (GET /usage): plano, período, requisições usadas e
+     * restantes, excedente e o limite por minuto da chave. Não gasta cota.
+     */
+    public function quota(): array
+    {
+        $response = $this->http()->get('/api/v1/usage');
+
+        return ($response->json() ?? []) + ($response->failed() ? ['http' => $response->status()] : []);
+    }
+
+    /**
+     * Requisições por dia nos últimos $days dias (1 a 90), com sucesso, erro
+     * do cliente e erro do servidor (GET /usage/daily). Não gasta cota.
+     */
+    public function requestsDaily(int $days = 30): array
+    {
+        $response = $this->http()->get('/api/v1/usage/daily', ['days' => $days]);
+
+        return ($response->json() ?? []) + ($response->failed() ? ['http' => $response->status()] : []);
+    }
+
+    /**
      * Até 1.000 mensagens de um canal numa chamada (POST /send/batch). Cada
      * item é uma mensagem (NotifySms, NotifyMail…) ou o corpo cru do envio
      * individual; $options leva o que vale para o lote (defaults, webhook_url,
@@ -223,8 +245,7 @@ class ServerQuery
 
     protected function http()
     {
-        return Http::withHeaders(['X-API-KEY' => $this->apiKey])
-            ->acceptJson()
+        return NotifyHttp::client(['X-API-KEY' => $this->apiKey])
             ->baseUrl($this->apiUrl);
     }
 }

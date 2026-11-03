@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification as NotificationFacade;
 use RiseTechApps\Notify\Channel\NotifyChannelSlack;
 use RiseTechApps\Notify\Channel\NotifyChannelSms;
+use RiseTechApps\Notify\Channel\NotifyChannelWhatsApp;
 use RiseTechApps\Notify\Events\NotifyFailedEvent;
 use RiseTechApps\Notify\Events\NotifySentEvent;
 use RiseTechApps\Notify\Exceptions\NotifyDeliveryException;
@@ -146,6 +147,33 @@ it('na fila, falha passageira (5xx, 429, 409) lança NotifyDeliveryException par
         ->and($e->response)->toBe(['message' => 'Indisponível']));
     Event::assertDispatched(NotifyFailedEvent::class);
 })->with([500, 503, 429, 409]);
+
+it('WhatsApp recusado pela proteção do número (429 com reason) não repete na fila e diz o motivo', function (string $reason) {
+    $body = ['status' => false, 'message' => 'Limite.', 'error' => 'Limite.', 'reason' => $reason];
+    Http::fake([Notify::BASE_URL.'/*' => Http::response($body, 429)]);
+    Event::fake([NotifyFailedEvent::class]);
+
+    $result = (new NotifyChannelWhatsApp)->send(
+        NotificationFacade::route('whatsapp', '5521999998888'),
+        notifyQueuedWith('whatsapp', fn () => (new NotifyWhatsApp)->content('Oi')),
+    );
+
+    expect($result)->toBe($body);
+    Event::assertDispatched(NotifyFailedEvent::class, fn (NotifyFailedEvent $e) => $e->protectionReason() === $reason
+        && $e->status === 429 && $e->response === $body);
+})->with(['daily_limit', 'new_contacts', 'paused', 'duplicate']);
+
+it('429 sem reason (limite de requisições) continua repetindo; falha comum não tem motivo de proteção', function () {
+    Http::fake([Notify::BASE_URL.'/*' => Http::response(['message' => 'Too Many Attempts.'], 429)]);
+    Event::fake([NotifyFailedEvent::class]);
+
+    expect(fn () => (new NotifyChannelWhatsApp)->send(
+        NotificationFacade::route('whatsapp', '5521999998888'),
+        notifyQueuedWith('whatsapp', fn () => (new NotifyWhatsApp)->content('Oi')),
+    ))->toThrow(NotifyDeliveryException::class);
+
+    Event::assertDispatched(NotifyFailedEvent::class, fn (NotifyFailedEvent $e) => $e->protectionReason() === null);
+});
 
 it('na fila, servidor fora do ar também lança, com o erro de conexão como causa', function () {
     Http::fake(fn () => throw new ConnectionException('cURL error 28: timeout'));

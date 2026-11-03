@@ -52,6 +52,46 @@ return [
     // false: devolve o erro também na fila.
     'retry_failures' => env('NOTIFY_SERVICE_RETRY_FAILURES', true),
 
+    // Chamadas ao notify-server. timeout: segundos até desistir da resposta
+    // (com o servidor lento, a tela do atendente não fica presa). Arquivos
+    // (respostas com anexo, mídia de fluxo e de campanha) usam upload_timeout.
+    // retries: novas tentativas só em leituras (GET) e só em falha de conexão
+    // ou 5xx, com retry_sleep ms entre elas. Envios nunca repetem sozinhos.
+    'http' => [
+        'timeout' => env('NOTIFY_HTTP_TIMEOUT', 20),
+        'connect_timeout' => env('NOTIFY_HTTP_CONNECT_TIMEOUT', 5),
+        'upload_timeout' => env('NOTIFY_HTTP_UPLOAD_TIMEOUT', 120),
+        'retries' => env('NOTIFY_HTTP_RETRIES', 2),
+        'retry_sleep' => env('NOTIFY_HTTP_RETRY_SLEEP', 200),
+    ],
+
+    // Cache curto do que quase não muda e é pedido em toda tela do chat:
+    // team()->members(), chat()->numbers() e chat()->botFlows()->all(). Quem
+    // altera pelo pacote (syncAgent, create/update do fluxo, updateChatSettings…)
+    // já limpa o cache; o que mudar pelo painel aparece depois de ttl segundos.
+    // ttl 0 desliga. store null = o cache padrão da aplicação.
+    'cache' => [
+        'ttl' => env('NOTIFY_CACHE_TTL', 30),
+        'store' => env('NOTIFY_CACHE_STORE'),
+    ],
+
+    // Tempo real no front-end sem polling: cada NotifyWhatsAppEvent (webhook do
+    // chat ou notify:whatsapp-events) é retransmitido pelo Broadcasting do
+    // Laravel (Reverb, Pusher, Ably…) em canais privados:
+    //   private-{channel}                      todos os eventos da conta
+    //   private-{channel}.{configuration_id}   só os de um número
+    // Autorize os canais em routes/channels.php. Veja o README (Tempo real).
+    'broadcast' => [
+        'enabled' => env('NOTIFY_BROADCAST', false),
+        'channel' => env('NOTIFY_BROADCAST_CHANNEL', 'notify.whatsapp'),
+        // Só estes tipos (ex.: ['message.received', 'conversation.updated']); vazio = todos.
+        'events' => [],
+        // Conexão do broadcasting (null = a padrão) e fila (null = a padrão;
+        // 'sync' transmite na hora, dentro do webhook).
+        'connection' => env('NOTIFY_BROADCAST_CONNECTION'),
+        'queue' => env('NOTIFY_BROADCAST_QUEUE'),
+    ],
+
     'sms' => [
         // config_id default (UUID ou label, ex.: "Twilio Principal") usado quando a
         // notificação não passa ->configId(). null = usa a config default do servidor.

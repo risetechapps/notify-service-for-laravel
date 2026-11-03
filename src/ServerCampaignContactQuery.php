@@ -2,7 +2,7 @@
 
 namespace RiseTechApps\Notify;
 
-use Illuminate\Support\Facades\Http;
+use RiseTechApps\Notify\Support\NotifyHttp;
 
 /**
  * Sub-recurso de contatos de uma campanha — status e motivo de falha por destinatário.
@@ -58,8 +58,7 @@ class ServerCampaignContactQuery
 
     protected function http()
     {
-        return Http::withHeaders(['X-API-KEY' => $this->apiKey])
-            ->acceptJson()
+        return NotifyHttp::client(['X-API-KEY' => $this->apiKey])
             ->baseUrl($this->apiUrl);
     }
 }
